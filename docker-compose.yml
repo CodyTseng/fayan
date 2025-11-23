@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  # Nostr network crawler service
+  crawler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fayan-crawler
+    command: ["/app/fayan-crawler"]
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nostr API service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fayan-api
+    command: ["/app/fayan-api"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - crawler

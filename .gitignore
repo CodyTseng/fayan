@@ -1,0 +1,35 @@
+# Binaries
+bin/
+fayan
+main
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+data/*
+!data/.gitkeep
+
+# Backups
+backups/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
