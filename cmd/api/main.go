@@ -61,6 +61,25 @@ type ErrorResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// corsMiddleware adds CORS headers to allow cross-origin requests
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		// Handle preflight requests
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Call the next handler
+		next(w, r)
+	}
+}
+
 func main() {
 	// Load configuration
 	var err error
@@ -82,8 +101,8 @@ func main() {
 	go cacheCleanupRoutine()
 
 	// Setup HTTP routes
-	http.HandleFunc("/health", healthHandler) // Handles /health
-	http.HandleFunc("/", userHandler)         // Handles /{pubkeyOrNpub}
+	http.HandleFunc("/health", corsMiddleware(healthHandler)) // Handles /health
+	http.HandleFunc("/", corsMiddleware(userHandler))         // Handles /{pubkeyOrNpub}
 
 	// Start server
 	log.Printf("[API] Starting API server on port %s", cfg.Port)
