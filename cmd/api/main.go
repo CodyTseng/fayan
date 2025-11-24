@@ -52,6 +52,7 @@ type UserResponse struct {
 	Pubkey     string `json:"pubkey"`
 	Rank       int    `json:"rank"`
 	Percentile int    `json:"percentile"`
+	Followers  int    `json:"followers"`
 }
 
 // ErrorResponse represents an error response
@@ -273,6 +274,7 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 		Pubkey:     user.Pubkey,
 		Rank:       user.Rank,
 		Percentile: percentile,
+		Followers:  user.Followers,
 	}
 
 	writeJSON(w, http.StatusOK, response)

@@ -17,9 +17,10 @@ type Connection struct {
 
 // UserInfo represents a user's complete information.
 type UserInfo struct {
-	Pubkey string  `json:"pubkey"`
-	Rank   int     `json:"rank"`
-	Score  float64 `json:"score"`
+	Pubkey    string  `json:"pubkey"`
+	Rank      int     `json:"rank"`
+	Score     float64 `json:"score"`
+	Followers int     `json:"followers"`
 }
 
 // Initialize opens the database connection and ensures the schema is up to date.
@@ -255,7 +256,7 @@ func RandomPubkeys(db *sql.DB, limit int) ([]string, error) {
 // GetUserByPubkey retrieves user information by public key.
 func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 	query := `
-		SELECT pubkey, rank, score
+		SELECT pubkey, rank, score, followers
 		FROM pubkeys
 		WHERE pubkey = ?;
 	`
@@ -264,6 +265,7 @@ func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 		&user.Pubkey,
 		&user.Rank,
 		&user.Score,
+		&user.Followers,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil // User not found
