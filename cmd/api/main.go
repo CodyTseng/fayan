@@ -256,7 +256,7 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pubkey = pubkeyStr
-	} else if nostr.IsValidPublicKey(pubkey) {
+	} else if !nostr.IsValidPublicKey(pubkey) {
 		writeError(w, http.StatusBadRequest, "Invalid pubkey format (expected 64 hex characters)")
 		return
 	}
