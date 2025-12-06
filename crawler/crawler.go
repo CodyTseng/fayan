@@ -451,7 +451,6 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 	}
 
 	database.UpsertPubkey(c.db, ev.PubKey)
-	database.DeleteConnectionsBySource(c.db, ev.PubKey)
 
 	c.processedMu.Lock()
 	c.processed[ev.PubKey] = time.Now()

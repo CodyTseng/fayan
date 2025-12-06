@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"sort"
+	"time"
 
 	"fayan/database"
 )
@@ -38,8 +39,12 @@ func Calculate(db *sql.DB) error {
 	}
 
 	// Stream connections and build edge list using a read-only transaction
+	// Only consider connections seen in the last 30 days
 	log.Println("   [INFO] Streaming connections from database...")
 	connectionCount := 0
+
+	// Only consider connections from the last 30 days
+	cutoffTime := time.Now().UTC().AddDate(0, 0, -30)
 
 	// Use a read-only transaction to avoid interfering with writes
 	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
@@ -57,7 +62,7 @@ func Calculate(db *sql.DB) error {
 		}
 		connectionCount++
 		return nil
-	})
+	}, &cutoffTime)
 
 	// Always close the transaction
 	if txErr := tx.Rollback(); txErr != nil && err == nil {

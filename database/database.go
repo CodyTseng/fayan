@@ -161,16 +161,6 @@ func UpsertConnection(db *sql.DB, source, target string) error {
 	return err
 }
 
-// DeleteConnectionsBySource deletes all connections originating from a given source pubkey.
-func DeleteConnectionsBySource(db *sql.DB, source string) error {
-	query := `
-		DELETE FROM connections
-		WHERE source_pubkey = ?;
-	`
-	_, err := db.Exec(query, source)
-	return err
-}
-
 // StreamConnections streams connections from the database using a callback function.
 // This approach avoids loading all connections into memory and reduces database lock time.
 func StreamConnections(db *sql.DB, callback func(Connection) error) error {
@@ -200,8 +190,17 @@ func StreamConnections(db *sql.DB, callback func(Connection) error) error {
 
 // StreamConnectionsInTx streams connections from the database within a transaction.
 // This allows using a read-only transaction to avoid blocking writes.
-func StreamConnectionsInTx(tx *sql.Tx, callback func(Connection) error) error {
-	rows, err := tx.Query("SELECT source_pubkey, target_pubkey FROM connections;")
+// If afterTime is provided, only connections with last_seen after that time will be streamed.
+func StreamConnectionsInTx(tx *sql.Tx, callback func(Connection) error, afterTime *time.Time) error {
+	var rows *sql.Rows
+	var err error
+
+	if afterTime != nil {
+		rows, err = tx.Query("SELECT source_pubkey, target_pubkey FROM connections WHERE last_seen >= ?;", afterTime)
+	} else {
+		rows, err = tx.Query("SELECT source_pubkey, target_pubkey FROM connections;")
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to query connections: %w", err)
 	}
