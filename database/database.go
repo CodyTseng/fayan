@@ -18,7 +18,7 @@ type Connection struct {
 // UserInfo represents a user's complete information.
 type UserInfo struct {
 	Pubkey    string  `json:"pubkey"`
-	Rank      int     `json:"rank"`
+	Rank      *int    `json:"rank,omitempty"` // Nullable
 	Score     float64 `json:"score"`
 	Followers int     `json:"followers"`
 }
@@ -261,9 +261,10 @@ func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 		WHERE pubkey = ?;
 	`
 	var user UserInfo
+	var rank sql.NullInt64
 	err := db.QueryRow(query, pubkey).Scan(
 		&user.Pubkey,
-		&user.Rank,
+		&rank,
 		&user.Score,
 		&user.Followers,
 	)
@@ -273,6 +274,13 @@ func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user by pubkey: %w", err)
 	}
+
+	// Convert sql.NullInt64 to *int
+	if rank.Valid {
+		rankValue := int(rank.Int64)
+		user.Rank = &rankValue
+	}
+
 	return &user, nil
 }
 

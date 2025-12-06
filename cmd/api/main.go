@@ -50,7 +50,7 @@ type HealthResponse struct {
 // UserResponse represents the user query response
 type UserResponse struct {
 	Pubkey     string `json:"pubkey"`
-	Rank       int    `json:"rank"`
+	Rank       *int   `json:"rank,omitempty"` // Nullable
 	Percentile int    `json:"percentile"`
 	Followers  int    `json:"followers"`
 }
@@ -285,8 +285,8 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 	// Calculate percentile (what percentage of users this user ranks better than)
 	// rank 1 is the best, so percentile = (totalUsers - rank) / totalUsers * 100
 	percentile := 0
-	if totalUsers > 0 {
-		percentile = int(float64(totalUsers-user.Rank) / float64(totalUsers) * 100)
+	if user.Rank != nil && totalUsers > 0 {
+		percentile = int(float64(totalUsers-*user.Rank) / float64(totalUsers) * 100)
 	}
 
 	response := UserResponse{
