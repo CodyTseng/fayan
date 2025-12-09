@@ -18,8 +18,8 @@ type Connection struct {
 // UserInfo represents a user's complete information.
 type UserInfo struct {
 	Pubkey    string  `json:"pubkey"`
-	Rank      *int    `json:"rank,omitempty"` // Nullable
 	Score     float64 `json:"score"`
+	Rank      *int    `json:"rank,omitempty"`
 	Followers int     `json:"followers"`
 }
 
@@ -87,6 +87,8 @@ func createTables(db *sql.DB) error {
 		pubkey TEXT PRIMARY KEY,
 		score REAL DEFAULT 0.0,
 		rank INTEGER,
+		trust_score REAL DEFAULT 0.0, 
+		page_score REAL DEFAULT 0.0, 
 		followers INTEGER DEFAULT 0,
 		following INTEGER DEFAULT 0,
 		created_at TIMESTAMP NOT NULL,
@@ -117,6 +119,10 @@ func createTables(db *sql.DB) error {
 		return err
 	}
 
+	// Add trustrank/pagerank columns if they don't exist (for existing databases)
+	db.Exec("ALTER TABLE pubkeys ADD COLUMN trust_score REAL DEFAULT 0.0;")
+	db.Exec("ALTER TABLE pubkeys ADD COLUMN page_score REAL DEFAULT 0.0;")
+
 	return nil
 }
 
@@ -132,15 +138,15 @@ func UpsertPubkey(db *sql.DB, pubkey string) error {
 	return err
 }
 
-// UpdatePubkey updates the score, rank, followers, and following for a given pubkey.
-func UpdatePubkey(db *sql.DB, pubkey string, score float64, rank int, followers int, following int32) error {
+// UpdatePubkey updates the trustrank score, pagerank score, ranks, followers, and following for a given pubkey.
+func UpdatePubkey(db *sql.DB, pubkey string, score float64, rank int, trustScore float64, pageScore float64, followers int, following int32) error {
 	now := time.Now().UTC()
 	query := `
 		UPDATE pubkeys
-		SET score = ?, rank = ?, followers = ?, following = ?, updated_at = ?
+		SET score = ?, rank = ?, trust_score = ?, page_score = ?, followers = ?, following = ?, updated_at = ?
 		WHERE pubkey = ?;
 	`
-	_, err := db.Exec(query, score, rank, followers, following, now, pubkey)
+	_, err := db.Exec(query, score, rank, trustScore, pageScore, followers, following, now, pubkey)
 	if err != nil {
 		return fmt.Errorf("failed to update score for pubkey %s: %w", pubkey, err)
 	}
@@ -228,7 +234,7 @@ func StreamConnectionsInTx(tx *sql.Tx, callback func(Connection) error, afterTim
 func RandomPubkeys(db *sql.DB, limit int) ([]string, error) {
 	// First get the total count
 	var count int64
-	err := db.QueryRow("SELECT COUNT(*) FROM pubkeys;").Scan(&count)
+	err := db.QueryRow("SELECT COUNT(1) FROM pubkeys;").Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count pubkeys: %w", err)
 	}

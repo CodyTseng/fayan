@@ -3,9 +3,9 @@
 > [!WARNING]
 > This project is currently under active development.
 
-**Fayan** (法眼), meaning "Dharma Eye" in Chinese, represents the ability to perceive truth and distinguish authenticity from deception. This project uses PageRank algorithms to identify spam accounts in the Nostr network.
+**Fayan** (法眼), meaning "Dharma Eye" in Chinese, represents the ability to perceive truth and distinguish authenticity from deception. This project uses TrustRank and PageRank algorithms to identify spam accounts in the Nostr network.
 
-A PageRank-based reputation system for Nostr.
+A TrustRank & PageRank based reputation system for Nostr.
 
 ## Features
 

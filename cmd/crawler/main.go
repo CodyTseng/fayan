@@ -22,8 +22,8 @@ func main() {
 		"██╔══╝   ██╔══██║   ╚██╔╝   ██╔══██║ ██║╚██╗██║\n" +
 		"██║      ██║  ██║    ██║    ██║  ██║ ██║ ╚████║\n" +
 		"╚═╝      ╚═╝  ╚═╝    ╚═╝    ╚═╝  ╚═╝ ╚═╝  ╚═══╝")
-	fmt.Println("   PageRank-based Reputation System for Nostr")
-	fmt.Println("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println("         Reputation System for Nostr")
+	fmt.Println("        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// 1. Load Configuration
 	cfg, err := config.Load("config.yaml")
@@ -40,19 +40,19 @@ func main() {
 	defer db.Close()
 	log.Println("[DATABASE] Ready")
 
-	// 3. Perform an initial PageRank calculation immediately
-	log.Println("[PAGERANK] Performing initial calculation...")
-	if err := calculator.Calculate(db); err != nil {
-		log.Printf("[PAGERANK] Initial calculation failed: %v", err)
+	// 3. Perform an initial rank calculation immediately
+	log.Println("[RANK] Performing initial calculation...")
+	if err := calculator.Calculate(db, cfg.SeedPubkeys); err != nil {
+		log.Printf("[RANK] Initial calculation failed: %v", err)
 	} else {
-		log.Println("[PAGERANK] Initial calculation completed")
+		log.Println("[RANK] Initial calculation completed")
 	}
 
 	// 4. Start the Nostr Crawler in a background goroutine
 	c := crawler.NewCrawler(db, cfg.Relays, cfg.SeedPubkeys)
 	c.Start()
 
-	// 5. Periodically Calculate PageRank
+	// 5. Periodically Calculate Ranks
 	ticker := time.NewTicker(cfg.GetPageRankInterval())
 	defer ticker.Stop()
 
@@ -65,11 +65,11 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("[PAGERANK] Starting periodic calculation...")
-			if err := calculator.Calculate(db); err != nil {
-				log.Printf("[PAGERANK] Calculation failed: %v", err)
+			log.Println("[RANK] Starting periodic calculation...")
+			if err := calculator.Calculate(db, cfg.SeedPubkeys); err != nil {
+				log.Printf("[RANK] Calculation failed: %v", err)
 			} else {
-				log.Println("[PAGERANK] Calculation completed")
+				log.Println("[RANK] Calculation completed")
 			}
 		case <-sigChan:
 			log.Println("\n[MAIN] Shutdown signal received")
