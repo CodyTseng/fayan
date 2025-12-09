@@ -88,14 +88,14 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize database
-	db, err = database.Initialize(cfg.Database)
+	// Initialize database in read-only mode (optimized for API queries)
+	db, err = database.Initialize(cfg.Database, database.ModeReadOnly)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
-	log.Println("[API] Database initialized successfully")
+	log.Println("[API] Database initialized successfully (read-only mode)")
 
 	// Start cache cleanup goroutine
 	go cacheCleanupRoutine()

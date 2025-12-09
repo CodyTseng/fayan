@@ -23,14 +23,19 @@ type UserInfo struct {
 	Followers int     `json:"followers"`
 }
 
-// Initialize opens the database connection and ensures the schema is up to date.
-func Initialize(dataSourceName string) (*sql.DB, error) {
-	// Enable WAL mode and busy timeout in the connection string
-	// WAL mode allows readers and writers to work concurrently
-	if !containsQueryParams(dataSourceName) {
-		dataSourceName += "?_journal_mode=WAL&_busy_timeout=5000"
-	}
+// DBMode specifies the database access mode
+type DBMode int
 
+const (
+	// ModeReadWrite is for crawler - optimized for writes
+	ModeReadWrite DBMode = iota
+	// ModeReadOnly is for API - optimized for reads
+	ModeReadOnly
+)
+
+// Initialize opens the database connection and ensures the schema is up to date.
+// Use ModeReadWrite for crawler (write-heavy) and ModeReadOnly for API (read-heavy).
+func Initialize(dataSourceName string, mode DBMode) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
 		return nil, fmt.Errorf("could not open database: %w", err)
@@ -40,17 +45,33 @@ func Initialize(dataSourceName string) (*sql.DB, error) {
 		return nil, fmt.Errorf("could not connect to database: %w", err)
 	}
 
-	// Configure connection pool to reduce contention
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	// Configure connection pool based on mode
+	if mode == ModeReadOnly {
+		// API: more connections for concurrent reads
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+	} else {
+		// Crawler: fewer connections since writes are serialized in SQLite
+		db.SetMaxOpenConns(4)
+		db.SetMaxIdleConns(2)
+	}
 	db.SetConnMaxLifetime(time.Hour)
 
 	// Set additional PRAGMAs for better concurrency
 	pragmas := []string{
-		"PRAGMA synchronous = NORMAL;",    // Faster writes, still safe in WAL mode
-		"PRAGMA temp_store = MEMORY;",     // Use memory for temp tables
-		"PRAGMA mmap_size = 30000000000;", // Memory-mapped I/O for better performance
-		"PRAGMA cache_size = -64000;",     // 64MB cache
+		"PRAGMA journal_mode = WAL;",             // Explicitly set WAL mode as PRAGMA (more reliable)
+		"PRAGMA synchronous = NORMAL;",           // Faster writes, still safe in WAL mode
+		"PRAGMA temp_store = MEMORY;",            // Use memory for temp tables
+		"PRAGMA mmap_size = 1073741824;",         // Memory-mapped I/O for better performance
+		"PRAGMA cache_size = -64000;",            // 64MB cache
+		"PRAGMA wal_autocheckpoint = 1000;",      // Checkpoint after 1000 pages written to WAL
+		"PRAGMA journal_size_limit = 104857600;", // Limit WAL file to 100MB
+		"PRAGMA busy_timeout = 30000;",           // 30 seconds busy timeout
+	}
+
+	// Add read-only optimization for API mode
+	if mode == ModeReadOnly {
+		pragmas = append(pragmas, "PRAGMA query_only = ON;") // Prevent accidental writes
 	}
 
 	for _, pragma := range pragmas {
@@ -59,25 +80,14 @@ func Initialize(dataSourceName string) (*sql.DB, error) {
 		}
 	}
 
-	if err := createTables(db); err != nil {
-		return nil, fmt.Errorf("could not create tables: %w", err)
+	// Only create tables in read-write mode
+	if mode == ModeReadWrite {
+		if err := createTables(db); err != nil {
+			return nil, fmt.Errorf("could not create tables: %w", err)
+		}
 	}
 
 	return db, nil
-}
-
-// containsQueryParams checks if the data source name already contains query parameters
-func containsQueryParams(dsn string) bool {
-	return len(dsn) > 0 && (dsn[len(dsn)-1] == '?' || containsChar(dsn, '?'))
-}
-
-func containsChar(s string, c rune) bool {
-	for _, ch := range s {
-		if ch == c {
-			return true
-		}
-	}
-	return false
 }
 
 // createTables defines and executes the SQL statements to create the necessary tables.

@@ -31,14 +31,14 @@ func main() {
 		log.Fatalf("[CONFIG] Failed to load configuration: %v", err)
 	}
 
-	// 2. Initialize Database
+	// 2. Initialize Database in read-write mode (optimized for crawler writes)
 	log.Println("[DATABASE] Initializing...")
-	db, err := database.Initialize(cfg.Database)
+	db, err := database.Initialize(cfg.Database, database.ModeReadWrite)
 	if err != nil {
 		log.Fatalf("[DATABASE] Failed to initialize: %v", err)
 	}
 	defer db.Close()
-	log.Println("[DATABASE] Ready")
+	log.Println("[DATABASE] Ready (read-write mode)")
 
 	// 3. Perform an initial rank calculation immediately
 	log.Println("[RANK] Performing initial calculation...")
