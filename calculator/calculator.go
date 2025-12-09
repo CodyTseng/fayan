@@ -127,9 +127,9 @@ func Calculate(db *sql.DB, seedPubkeys []string) error {
 
 	// 5. Calculate scores
 	scores := make([]float64, numNodes)
-	for i := 0; i < numNodes; i++ {
-		// Combine PageRank and TrustRank scores (simple average)
-		scores[i] = (pageScores[i] + trustScores[i]) / 2.0
+	for i := range numNodes {
+		// Combine TrustRank and PageRank scores
+		scores[i] = 0.7*trustScores[i] + 0.3*pageScores[i]
 	}
 
 	// 5. Calculate ranks based on scores
