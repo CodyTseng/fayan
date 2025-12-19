@@ -15,7 +15,7 @@ type RelayUsageInfo struct {
 	relay    *nostr.Relay
 }
 
-// PoolManager manages Nostr relay connections and cleans up idle ones to prevent goroutine leaks
+// PoolManager manages Nostr relay connections and cleans up idle ones
 type PoolManager struct {
 	pool          *nostr.SimplePool
 	relayUsage    map[string]*RelayUsageInfo
@@ -23,7 +23,7 @@ type PoolManager struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	cleanupTicker *time.Ticker
-	idleTimeout   time.Duration // how long a relay can be idle before cleanup
+	idleTimeout   time.Duration
 }
 
 // NewPoolManager creates a new pool manager with automatic idle connection cleanup
@@ -35,10 +35,9 @@ func NewPoolManager(ctx context.Context, relayOptions ...nostr.RelayOption) *Poo
 		relayUsage:  make(map[string]*RelayUsageInfo),
 		ctx:         poolCtx,
 		cancel:      cancel,
-		idleTimeout: time.Minute, // close relays idle for more than a minutes
+		idleTimeout: time.Minute,
 	}
 
-	// run cleanup every 30 seconds
 	pm.cleanupTicker = time.NewTicker(30 * time.Second)
 	go pm.cleanupLoop()
 
@@ -55,7 +54,6 @@ func (pm *PoolManager) TrackRelayUsage(relayURL string) {
 	pm.usageMu.Lock()
 	defer pm.usageMu.Unlock()
 
-	// get the relay from the pool
 	relay, ok := pm.pool.Relays.Load(relayURL)
 	if !ok || relay == nil {
 		return
@@ -71,7 +69,6 @@ func (pm *PoolManager) TrackRelayUsage(relayURL string) {
 	}
 }
 
-// cleanupLoop periodically closes idle relay connections
 func (pm *PoolManager) cleanupLoop() {
 	for {
 		select {
@@ -83,7 +80,6 @@ func (pm *PoolManager) cleanupLoop() {
 	}
 }
 
-// cleanupIdleRelays closes relay connections that haven't been used recently
 func (pm *PoolManager) cleanupIdleRelays() {
 	pm.usageMu.Lock()
 	defer pm.usageMu.Unlock()
@@ -91,30 +87,31 @@ func (pm *PoolManager) cleanupIdleRelays() {
 	now := time.Now()
 
 	for url, info := range pm.relayUsage {
-		// check if relay has been idle too long
 		if now.Sub(info.lastUsed) > pm.idleTimeout {
 			if info.relay != nil && info.relay.IsConnected() {
 				if err := info.relay.Close(); err != nil {
 					log.Printf("[POOL] Error closing idle relay %s: %v", url, err)
 				}
 			}
-			// remove from tracking
 			delete(pm.relayUsage, url)
 		}
 	}
 }
 
-// Stop gracefully shuts down the pool manager
+// Stop stops the pool manager and closes all connections
 func (pm *PoolManager) Stop() {
-
-	if pm.cleanupTicker != nil {
-		pm.cleanupTicker.Stop()
-	}
-
+	pm.cleanupTicker.Stop()
 	pm.cancel()
-}
 
-// Get current number of connected relays
-func (pm *PoolManager) GetConnectedRelayCount() int {
-	return len(pm.relayUsage)
+	pm.usageMu.Lock()
+	defer pm.usageMu.Unlock()
+
+	for url, info := range pm.relayUsage {
+		if info.relay != nil && info.relay.IsConnected() {
+			if err := info.relay.Close(); err != nil {
+				log.Printf("[POOL] Error closing relay %s: %v", url, err)
+			}
+		}
+		delete(pm.relayUsage, url)
+	}
 }

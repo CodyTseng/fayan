@@ -8,10 +8,10 @@ import (
 	"syscall"
 	"time"
 
-	"fayan/calculator"
 	"fayan/config"
-	"fayan/crawler"
-	"fayan/database"
+	"fayan/internal/crawler"
+	"fayan/internal/ranking"
+	"fayan/internal/repository"
 )
 
 func main() {
@@ -31,32 +31,35 @@ func main() {
 		log.Fatalf("[CONFIG] Failed to load configuration: %v", err)
 	}
 
-	// 2. Initialize Database in read-write mode (optimized for crawler writes)
+	// 2. Initialize Repository in read-write mode
 	log.Println("[DATABASE] Initializing...")
-	db, err := database.Initialize(cfg.Database, database.ModeReadWrite)
+	repo, err := repository.New(cfg.Database, repository.ModeReadWrite)
 	if err != nil {
 		log.Fatalf("[DATABASE] Failed to initialize: %v", err)
 	}
-	defer db.Close()
+	defer repo.Close()
 	log.Println("[DATABASE] Ready (read-write mode)")
 
-	// 3. Perform an initial rank calculation immediately
+	// 3. Create ranking calculator
+	calculator := ranking.NewCalculator(repo, cfg.SeedPubkeys)
+
+	// 4. Perform an initial rank calculation
 	log.Println("[RANK] Performing initial calculation...")
-	if err := calculator.Calculate(db, cfg.SeedPubkeys); err != nil {
+	if err := calculator.Calculate(); err != nil {
 		log.Printf("[RANK] Initial calculation failed: %v", err)
 	} else {
 		log.Println("[RANK] Initial calculation completed")
 	}
 
-	// 4. Start the Nostr Crawler in a background goroutine
-	c := crawler.NewCrawler(db, cfg.Relays, cfg.SeedPubkeys)
+	// 5. Start the Nostr Crawler
+	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys)
 	c.Start()
 
-	// 5. Periodically Calculate Ranks
+	// 6. Periodically Calculate Ranks
 	ticker := time.NewTicker(cfg.GetPageRankInterval())
 	defer ticker.Stop()
 
-	// 6. Setup graceful shutdown
+	// 7. Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -66,7 +69,7 @@ func main() {
 		select {
 		case <-ticker.C:
 			log.Println("[RANK] Starting periodic calculation...")
-			if err := calculator.Calculate(db, cfg.SeedPubkeys); err != nil {
+			if err := calculator.Calculate(); err != nil {
 				log.Printf("[RANK] Calculation failed: %v", err)
 			} else {
 				log.Println("[RANK] Calculation completed")
