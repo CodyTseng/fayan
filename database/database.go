@@ -21,6 +21,7 @@ type UserInfo struct {
 	Score     float64 `json:"score"`
 	Rank      *int    `json:"rank,omitempty"`
 	Followers int     `json:"followers"`
+	Following int     `json:"following"`
 }
 
 // DBMode specifies the database access mode
@@ -271,7 +272,7 @@ func RandomPubkeys(db *sql.DB, limit int) ([]string, error) {
 // GetUserByPubkey retrieves user information by public key.
 func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 	query := `
-		SELECT pubkey, rank, score, followers
+		SELECT pubkey, rank, score, followers, following
 		FROM pubkeys
 		WHERE pubkey = ?;
 	`
@@ -282,6 +283,7 @@ func GetUserByPubkey(db *sql.DB, pubkey string) (*UserInfo, error) {
 		&rank,
 		&user.Score,
 		&user.Followers,
+		&user.Following,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil // User not found

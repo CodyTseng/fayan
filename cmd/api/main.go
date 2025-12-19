@@ -53,6 +53,7 @@ type UserResponse struct {
 	Rank       *int   `json:"rank,omitempty"` // Nullable
 	Percentile int    `json:"percentile"`
 	Followers  int    `json:"followers"`
+	Following  int    `json:"following"`
 }
 
 // ErrorResponse represents an error response
@@ -294,6 +295,7 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 		Rank:       user.Rank,
 		Percentile: percentile,
 		Followers:  user.Followers,
+		Following:  user.Following,
 	}
 
 	writeJSON(w, http.StatusOK, response)
