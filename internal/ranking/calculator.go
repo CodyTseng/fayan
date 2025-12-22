@@ -132,35 +132,55 @@ func (c *Calculator) Calculate() error {
 		return rankList[i].score > rankList[j].score
 	})
 
-	// Update database
+	// Update database using batch updates to reduce WAL growth
 	log.Printf("   [INFO] Updating %d scores in database...", numNodes)
+
+	const batchSize = 1000
+	updates := make([]repository.PubkeyUpdate, 0, batchSize)
 	updatedCount := 0
+
 	for rank, item := range rankList {
 		pubkey := idToPubkey[item.id]
 		if pubkey == "" {
 			continue
 		}
 
-		followers := len(inLinks[item.id])
-		following := outDegree[item.id]
+		updates = append(updates, repository.PubkeyUpdate{
+			Pubkey:     pubkey,
+			Score:      scores[item.id],
+			Rank:       rank + 1,
+			TrustScore: trustScores[item.id],
+			PageScore:  pageScores[item.id],
+			Followers:  len(inLinks[item.id]),
+			Following:  outDegree[item.id],
+		})
 
-		err := c.repo.UpdatePubkey(
-			pubkey,
-			scores[item.id],
-			rank+1,
-			trustScores[item.id],
-			pageScores[item.id],
-			followers,
-			following,
-		)
-		if err != nil {
-			log.Printf("   [WARN] Failed to update pubkey %s: %v", pubkey, err)
-			continue
+		// Batch update when we reach batchSize
+		if len(updates) >= batchSize {
+			if err := c.repo.BatchUpdatePubkeys(updates); err != nil {
+				log.Printf("   [WARN] Batch update failed: %v", err)
+			} else {
+				updatedCount += len(updates)
+			}
+			updates = updates[:0]
 		}
-		updatedCount++
+	}
+
+	// Update remaining items
+	if len(updates) > 0 {
+		if err := c.repo.BatchUpdatePubkeys(updates); err != nil {
+			log.Printf("   [WARN] Final batch update failed: %v", err)
+		} else {
+			updatedCount += len(updates)
+		}
 	}
 
 	log.Printf("   [INFO] Updated %d/%d pubkeys", updatedCount, numNodes)
+
+	// Force WAL checkpoint after large batch operation
+	log.Println("   [INFO] Running WAL checkpoint...")
+	c.repo.Checkpoint()
+
 	return nil
 }
 

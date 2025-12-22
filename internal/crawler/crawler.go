@@ -217,7 +217,9 @@ func (c *Crawler) processEvent(event *nostr.Event) {
 
 func (c *Crawler) statusReporter() {
 	ticker := time.NewTicker(5 * time.Minute)
+	checkpointTicker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
+	defer checkpointTicker.Stop()
 
 	for {
 		select {
@@ -233,6 +235,10 @@ func (c *Crawler) statusReporter() {
 			total, banned := c.relayHealth.GetStats()
 			log.Printf("[CRAWLER] Status: crawled=%d, processed=%d, relays(failed=%d, banned=%d)",
 				crawledCount, processedCount, total, banned)
+		case <-checkpointTicker.C:
+			// Periodically checkpoint WAL to prevent it from growing too large
+			log.Println("[CRAWLER] Running periodic WAL checkpoint...")
+			c.repo.Checkpoint()
 		case <-c.ctx.Done():
 			return
 		}

@@ -87,9 +87,24 @@ func (r *Repository) Close() error {
 	return r.db.Close()
 }
 
+// Checkpoint performs a WAL checkpoint to reduce WAL file size.
+// This should be called periodically, especially after batch operations.
+func (r *Repository) Checkpoint() error {
+	_, err := r.db.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+	if err != nil {
+		log.Printf("Warning: failed to checkpoint WAL: %v", err)
+	}
+	return err
+}
+
 // Ping checks the database connectivity
 func (r *Repository) Ping() error {
 	return r.db.Ping()
+}
+
+// BeginTransaction starts a new transaction for batch operations
+func (r *Repository) BeginTransaction() (*sql.Tx, error) {
+	return r.db.Begin()
 }
 
 // createTables defines and executes the SQL statements to create the necessary tables.

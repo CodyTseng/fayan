@@ -37,6 +37,51 @@ func (r *Repository) UpdatePubkey(pubkey string, score float64, rank int, trustS
 	return nil
 }
 
+// PubkeyUpdate represents an update to a pubkey's scores
+type PubkeyUpdate struct {
+	Pubkey     string
+	Score      float64
+	Rank       int
+	TrustScore float64
+	PageScore  float64
+	Followers  int
+	Following  int32
+}
+
+// BatchUpdatePubkeys updates multiple pubkeys in a single transaction.
+// This is more efficient and reduces WAL growth.
+func (r *Repository) BatchUpdatePubkeys(updates []PubkeyUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		UPDATE pubkeys
+		SET score = ?, rank = ?, trust_score = ?, page_score = ?, followers = ?, following = ?, updated_at = ?
+		WHERE pubkey = ?;
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for _, u := range updates {
+		_, err := stmt.Exec(u.Score, u.Rank, u.TrustScore, u.PageScore, u.Followers, u.Following, now, u.Pubkey)
+		if err != nil {
+			return fmt.Errorf("failed to update pubkey %s: %w", u.Pubkey, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // GetUserByPubkey retrieves user information by public key.
 func (r *Repository) GetUserByPubkey(pubkey string) (*models.UserInfo, error) {
 	query := `
