@@ -1,0 +1,39 @@
+# Dockerfile for Fayan API
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git gcc musl-dev sqlite-dev
+
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the API binary
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/fayan-api ./cmd/api/main.go
+
+# Final stage
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates sqlite-libs
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/fayan-api .
+
+# Copy config file
+COPY config.yaml .
+
+# Create data directory
+RUN mkdir -p /app/data
+
+# Expose API port (adjust if needed)
+EXPOSE 8080
+
+CMD ["./fayan-api"]
