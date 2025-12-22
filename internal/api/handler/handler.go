@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fayan/internal/cache"
+	"fayan/internal/models"
 	"fayan/internal/repository"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -44,6 +45,11 @@ type UserResponse struct {
 	Following  int    `json:"following"`
 }
 
+// UsersRequest represents the batch user query request
+type UsersRequest struct {
+	Pubkeys []string `json:"pubkeys"`
+}
+
 // ErrorResponse represents an error response
 type ErrorResponse struct {
 	Error   string `json:"error"`
@@ -71,78 +77,169 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// User handles GET /{pubkeyOrNpub} requests
-func (h *Handler) User(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	pubkeyOrNpub := strings.TrimSpace(path)
-
+// normalizePubkey converts npub to hex pubkey and validates the format
+// Returns the normalized pubkey and true if valid, or empty string and false if invalid
+func normalizePubkey(pubkeyOrNpub string) (string, bool) {
+	pubkeyOrNpub = strings.TrimSpace(pubkeyOrNpub)
 	if pubkeyOrNpub == "" {
-		writeError(w, http.StatusBadRequest, "Pubkey or npub is required in the URL path")
-		return
+		return "", false
 	}
 
-	pubkey := pubkeyOrNpub
 	if strings.HasPrefix(pubkeyOrNpub, "npub") {
 		prefix, value, err := nip19.Decode(pubkeyOrNpub)
 		if err != nil || prefix != "npub" {
-			writeError(w, http.StatusBadRequest, "Invalid npub format")
-			return
+			return "", false
 		}
 		pubkeyStr, ok := value.(string)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "Invalid npub value type")
-			return
+			return "", false
 		}
-		pubkey = pubkeyStr
-	} else if !nostr.IsValidPublicKey(pubkey) {
-		writeError(w, http.StatusBadRequest, "Invalid pubkey format (expected 64 hex characters)")
-		return
+		return pubkeyStr, true
 	}
 
-	// Get user with cache
-	user, err := h.cache.GetUser(pubkey, func() (interface{}, error) {
-		return h.repo.GetUserByPubkey(pubkey)
-	})
-	if err != nil {
-		log.Printf("[API] Error querying user %s: %v", pubkey, err)
-		writeError(w, http.StatusInternalServerError, "Failed to query user")
-		return
+	if !nostr.IsValidPublicKey(pubkeyOrNpub) {
+		return "", false
 	}
+	return pubkeyOrNpub, true
+}
 
-	if user == nil {
-		writeError(w, http.StatusNotFound, "User not found")
-		return
-	}
-
-	// Get total users with cache
-	totalUsers, err := h.cache.GetTotalUsers(func() (int, error) {
-		return h.repo.GetTotalUsers()
-	})
-	if err != nil {
-		log.Printf("[API] Error getting total users: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to calculate percentile")
-		return
-	}
-
+// buildUserResponse creates a UserResponse from a user model
+func buildUserResponse(user *models.UserInfo, totalUsers int) *UserResponse {
 	percentile := 0
 	if user.Rank != nil && totalUsers > 0 {
 		percentile = int(float64(totalUsers-*user.Rank) / float64(totalUsers) * 100)
 	}
-
-	response := UserResponse{
+	return &UserResponse{
 		Pubkey:     user.Pubkey,
 		Rank:       user.Rank,
 		Percentile: percentile,
 		Followers:  user.Followers,
 		Following:  user.Following,
 	}
+}
+
+// User handles GET /{pubkeyOrNpub} or GET /users/{pubkeyOrNpub} requests
+func (h *Handler) User(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var pubkeyOrNpub string
+	if strings.HasPrefix(r.URL.Path, "/users/") {
+		pubkeyOrNpub = strings.TrimPrefix(r.URL.Path, "/users/")
+	} else {
+		pubkeyOrNpub = strings.TrimPrefix(r.URL.Path, "/")
+	}
+
+	if pubkeyOrNpub == "" {
+		writeError(w, http.StatusBadRequest, "Pubkey or npub is required in the URL path")
+		return
+	}
+
+	pubkey, valid := normalizePubkey(pubkeyOrNpub)
+	if !valid {
+		writeError(w, http.StatusBadRequest, "Invalid pubkey or npub format")
+		return
+	}
+
+	users, totalUsers, err := h.getUsersWithTotalCount([]string{pubkey})
+	if err != nil {
+		log.Printf("[API] Error querying user %s: %v", pubkey, err)
+		writeError(w, http.StatusInternalServerError, "Failed to query user")
+		return
+	}
+
+	user, found := users[pubkey]
+	if !found || user == nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildUserResponse(user, totalUsers))
+}
+
+// Users handles POST /users requests for batch user queries
+func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req UsersRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+
+	if len(req.Pubkeys) == 0 {
+		writeError(w, http.StatusBadRequest, "At least one pubkey is required")
+		return
+	}
+
+	if len(req.Pubkeys) > 100 {
+		writeError(w, http.StatusBadRequest, "Maximum 100 pubkeys allowed per request")
+		return
+	}
+
+	// Normalize pubkeys (convert npub to hex)
+	normalizedPubkeys := make([]string, 0, len(req.Pubkeys))
+	requestPubkeyMapping := make(map[string]string) // original -> normalized
+	for _, pubkeyOrNpub := range req.Pubkeys {
+		pubkey, valid := normalizePubkey(pubkeyOrNpub)
+		if !valid {
+			continue
+		}
+		normalizedPubkeys = append(normalizedPubkeys, pubkey)
+		requestPubkeyMapping[pubkeyOrNpub] = pubkey
+	}
+
+	if len(normalizedPubkeys) == 0 {
+		writeError(w, http.StatusBadRequest, "No valid pubkeys provided")
+		return
+	}
+
+	users, totalUsers, err := h.getUsersWithTotalCount(normalizedPubkeys)
+	if err != nil {
+		log.Printf("[API] Error querying users: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to query users")
+		return
+	}
+
+	// Build response
+	response := make(map[string]*UserResponse)
+	for _, pubkeyOrNpub := range req.Pubkeys {
+		normalizedPubkey, exists := requestPubkeyMapping[pubkeyOrNpub]
+		if !exists {
+			continue
+		}
+		user, found := users[normalizedPubkey]
+		if !found || user == nil {
+			continue
+		}
+		response[pubkeyOrNpub] = buildUserResponse(user, totalUsers)
+	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// getUsersWithTotalCount fetches users by pubkeys and the total user count
+func (h *Handler) getUsersWithTotalCount(pubkeys []string) (map[string]*models.UserInfo, int, error) {
+	users, err := h.cache.GetUsers(pubkeys, func(pks []string) (map[string]*models.UserInfo, error) {
+		return h.repo.GetUsersByPubkeys(pks)
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	totalUsers, err := h.cache.GetTotalUsers(func() (int, error) {
+		return h.repo.GetTotalUsers()
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return users, totalUsers, nil
 }
 
 // writeJSON writes a JSON response

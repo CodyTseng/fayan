@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"fayan/internal/models"
@@ -65,6 +66,53 @@ func (r *Repository) GetUserByPubkey(pubkey string) (*models.UserInfo, error) {
 	}
 
 	return &user, nil
+}
+
+// GetUsersByPubkeys retrieves multiple users by their public keys.
+func (r *Repository) GetUsersByPubkeys(pubkeys []string) (map[string]*models.UserInfo, error) {
+	if len(pubkeys) == 0 {
+		return make(map[string]*models.UserInfo), nil
+	}
+
+	// Build placeholders for IN clause
+	placeholders := make([]string, len(pubkeys))
+	args := make([]interface{}, len(pubkeys))
+	for i, pk := range pubkeys {
+		placeholders[i] = "?"
+		args[i] = pk
+	}
+
+	query := fmt.Sprintf(`
+		SELECT pubkey, rank, score, followers, following
+		FROM pubkeys
+		WHERE pubkey IN (%s);
+	`, strings.Join(placeholders, ","))
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users by pubkeys: %w", err)
+	}
+	defer rows.Close()
+
+	users := make(map[string]*models.UserInfo)
+	for rows.Next() {
+		var user models.UserInfo
+		var rank sql.NullInt64
+		if err := rows.Scan(&user.Pubkey, &rank, &user.Score, &user.Followers, &user.Following); err != nil {
+			return nil, fmt.Errorf("failed to scan user row: %w", err)
+		}
+		if rank.Valid {
+			rankValue := int(rank.Int64)
+			user.Rank = &rankValue
+		}
+		users[user.Pubkey] = &user
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating user rows: %w", err)
+	}
+
+	return users, nil
 }
 
 // GetTotalUsers returns the total number of users in the database.

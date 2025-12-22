@@ -96,6 +96,47 @@ func (c *Cache) GetTotalUsers(loader func() (int, error)) (int, error) {
 	return count, nil
 }
 
+// GetUsers retrieves multiple users from cache, using loader for cache misses
+func (c *Cache) GetUsers(pubkeys []string, loader func([]string) (map[string]*models.UserInfo, error)) (map[string]*models.UserInfo, error) {
+	result := make(map[string]*models.UserInfo)
+	var missedPubkeys []string
+
+	// Check cache for each pubkey
+	c.userCacheMutex.RLock()
+	for _, pubkey := range pubkeys {
+		if entry, exists := c.userCache[pubkey]; exists {
+			if time.Since(entry.timestamp) < c.userCacheTTL {
+				result[pubkey] = entry.user
+				continue
+			}
+		}
+		missedPubkeys = append(missedPubkeys, pubkey)
+	}
+	c.userCacheMutex.RUnlock()
+
+	// Load missed pubkeys from database
+	if len(missedPubkeys) > 0 {
+		loadedUsers, err := loader(missedPubkeys)
+		if err != nil {
+			return nil, err
+		}
+
+		// Update cache with loaded users
+		c.userCacheMutex.Lock()
+		now := time.Now()
+		for pubkey, user := range loadedUsers {
+			c.userCache[pubkey] = &userCacheEntry{
+				user:      user,
+				timestamp: now,
+			}
+			result[pubkey] = user
+		}
+		c.userCacheMutex.Unlock()
+	}
+
+	return result, nil
+}
+
 // cleanupRoutine periodically removes expired cache entries
 func (c *Cache) cleanupRoutine() {
 	ticker := time.NewTicker(10 * time.Minute)

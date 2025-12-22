@@ -36,7 +36,9 @@ func main() {
 
 	// Setup HTTP routes
 	http.HandleFunc("/health", middleware.CORS(h.Health))
-	http.HandleFunc("/", middleware.CORS(h.User))
+	http.HandleFunc("/users", middleware.CORS(h.Users))
+	http.HandleFunc("/users/", middleware.CORS(h.User))
+	http.HandleFunc("/", middleware.CORS(h.User)) // deprecated
 
 	// Start server
 	log.Printf("[API] Starting API server on port %s", cfg.Port)
