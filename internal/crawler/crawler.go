@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -70,16 +71,26 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 	}
 }
 
-// Stop gracefully shuts down the crawler
+// Stop gracefully shuts down the crawler and cleans up connections
 func (c *Crawler) Stop() {
 	log.Println("[CRAWLER] Shutting down...")
+
+	// Cancel the context to stop all operations
 	c.cancel()
+
+	// Stop the pool manager (this will close all relay connections)
 	c.poolManager.Stop()
+
+	// Close the results channel
 	close(c.resultsChan)
+
+	// Give some time for goroutines to finish
 	time.Sleep(2 * time.Second)
+
 	log.Println("[CRAWLER] Shutdown complete")
 }
 
+// getRelayLimiter returns a rate limiter for a specific relay, creating one if needed
 func (c *Crawler) getRelayLimiter(relay string) *rate.Limiter {
 	c.limitersMu.Lock()
 	defer c.limitersMu.Unlock()
@@ -95,15 +106,19 @@ func (c *Crawler) getRelayLimiter(relay string) *rate.Limiter {
 
 // Start begins the crawling process.
 func (c *Crawler) Start() {
+	// Single goroutine for network operations to avoid rate limiting
 	go c.networkWorker()
 
+	// Multiple goroutines for processing results
 	for range numProcessors {
 		go c.resultProcessor()
 	}
 
+	// Status reporter
 	go c.statusReporter()
 }
 
+// networkWorker is the single goroutine that handles all network communication
 func (c *Crawler) networkWorker() {
 	for {
 		select {
@@ -125,132 +140,365 @@ func (c *Crawler) networkWorker() {
 					pubkeys = append(pubkeys, pk)
 				}
 			}
-
 			if len(pubkeys) == 0 {
-				c.handleEmptyBatch()
+				// No pubkeys to crawl, sleep and increase wait time exponentially
+				c.consecutiveEmpty++
+				sleepTime := min(c.sleepDuration*time.Duration(1<<(c.consecutiveEmpty-1)), time.Hour) // 1h (capped)
+				log.Printf("[INFO] No new pubkeys to crawl (attempt %d). Sleeping for %v...", c.consecutiveEmpty, sleepTime)
+
+				// Interruptible sleep
+				select {
+				case <-time.After(sleepTime):
+				case <-c.ctx.Done():
+					return
+				}
 				continue
 			}
-
+			// Reset consecutive empty counter when we find pubkeys
 			c.consecutiveEmpty = 0
-			c.sleepDuration = 5 * time.Second
 			c.fetchBatch(pubkeys)
 		}
 	}
 }
 
-func (c *Crawler) handleEmptyBatch() {
-	c.consecutiveEmpty++
-	if c.consecutiveEmpty > 5 {
-		c.sleepDuration = min(c.sleepDuration*2, 5*time.Minute)
-	}
-	log.Printf("[CRAWLER] No new pubkeys to process, sleeping %v", c.sleepDuration)
-	time.Sleep(c.sleepDuration)
-}
-
-func (c *Crawler) fetchBatch(pubkeys []string) {
-	for _, pk := range pubkeys {
-		c.processedMu.Lock()
-		c.processed[pk] = time.Now()
-		c.processedMu.Unlock()
-	}
-
-	healthyRelays := c.getHealthyRelays()
-	if len(healthyRelays) == 0 {
-		log.Println("[CRAWLER] No healthy relays available, waiting...")
-		time.Sleep(30 * time.Second)
-		return
-	}
-
-	filter := nostr.Filter{
-		Authors: pubkeys,
-		Kinds:   []int{nostr.KindFollowList},
-	}
-
-	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
-	defer cancel()
-
-	for event := range c.poolManager.GetPool().SubManyEose(ctx, healthyRelays, nostr.Filters{filter}) {
-		if event.Event != nil {
-			c.resultsChan <- event.Event
-		}
-	}
-}
-
-func (c *Crawler) getHealthyRelays() []string {
-	healthy := make([]string, 0, len(c.relays))
-	for _, relay := range c.relays {
-		if !c.relayHealth.IsRelayBanned(relay) {
-			healthy = append(healthy, relay)
-		}
-	}
-	return healthy
-}
-
+// resultProcessor handles processing of contact events (database writes, queue management)
 func (c *Crawler) resultProcessor() {
-	for event := range c.resultsChan {
-		c.processEvent(event)
-	}
-}
-
-func (c *Crawler) processEvent(event *nostr.Event) {
-	c.crawledMu.Lock()
-	if c.crawled[event.ID] {
-		c.crawledMu.Unlock()
-		return
-	}
-	c.crawled[event.ID] = true
-	c.crawledMu.Unlock()
-
-	source := event.PubKey
-
-	for _, tag := range event.Tags {
-		if len(tag) >= 2 && tag[0] == "p" {
-			target := tag[1]
-			if target != "" && target != source && nostr.IsValidPublicKey(target) {
-				c.repo.UpsertPubkey(source)
-				c.repo.UpsertPubkey(target)
-				c.repo.UpsertConnection(source, target)
-			}
-		}
-	}
-}
-
-func (c *Crawler) statusReporter() {
-	ticker := time.NewTicker(5 * time.Minute)
-	checkpointTicker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	defer checkpointTicker.Stop()
-
 	for {
 		select {
-		case <-ticker.C:
-			c.crawledMu.Lock()
-			crawledCount := len(c.crawled)
-			c.crawledMu.Unlock()
-
-			c.processedMu.Lock()
-			processedCount := len(c.processed)
-			c.processedMu.Unlock()
-
-			total, banned := c.relayHealth.GetStats()
-			log.Printf("[CRAWLER] Status: crawled=%d, processed=%d, relays(failed=%d, banned=%d)",
-				crawledCount, processedCount, total, banned)
-		case <-checkpointTicker.C:
-			// Periodically checkpoint WAL to prevent it from growing too large
-			log.Println("[CRAWLER] Running periodic WAL checkpoint...")
-			c.repo.Checkpoint()
+		case event, ok := <-c.resultsChan:
+			if !ok {
+				return // Channel closed, exit
+			}
+			if event != nil {
+				c.processKind3Event(event)
+			}
 		case <-c.ctx.Done():
 			return
 		}
 	}
 }
 
-// Helper to check if relay URL contains certain patterns
-func containsAny(s string, substrs []string) bool {
-	for _, substr := range substrs {
-		if strings.Contains(s, substr) {
-			return true
+// fetchBatch fetches relay lists and contacts for a batch of pubkeys
+func (c *Crawler) fetchBatch(pubkeys []string) {
+	// Check if context is cancelled
+	select {
+	case <-c.ctx.Done():
+		return
+	default:
+	}
+
+	// Step 1: Fetch relay lists from bootstrap relays (batch operation)
+	ctx1, cancel1 := context.WithTimeout(c.ctx, 15*time.Second)
+	defer cancel1()
+
+	relayLists := c.fetchRelayLists(ctx1, pubkeys)
+
+	// Step 2: Group users by individual relay (not by relay combination)
+	// A user can appear in multiple relay groups
+	relayToUsers := make(map[string][]string)
+
+	for _, pubkey := range pubkeys {
+		userRelays := c.calculateRelaysForPubkey(pubkey, relayLists[pubkey])
+
+		if len(userRelays) == 0 {
+			continue
+		}
+
+		// Add this user to each of their relays
+		for _, relay := range userRelays {
+			relayToUsers[relay] = append(relayToUsers[relay], pubkey)
 		}
 	}
-	return false
+
+	// Step 3: Fetch contacts from each relay concurrently
+	// Collect results from all relays
+	contactEvents := make(map[string]*nostr.Event)
+	var wg sync.WaitGroup
+	var eventsMu sync.Mutex // Protect concurrent map writes
+
+	for relay, users := range relayToUsers {
+		wg.Add(1)
+		go func(r string, u []string) {
+			defer wg.Done()
+			events := c.fetchContactsFromRelay(r, u)
+
+			// Use mutex to protect map access
+			eventsMu.Lock()
+			for pubkey, event := range events {
+				if existing, exists := contactEvents[pubkey]; !exists || event.CreatedAt > existing.CreatedAt {
+					contactEvents[pubkey] = event
+				}
+			}
+			eventsMu.Unlock()
+		}(relay, users)
+	}
+
+	// Wait for all relays to finish
+	wg.Wait()
+
+	// Step 5: Check against global timestamps and send to processors
+	for _, event := range contactEvents {
+		select {
+		case c.resultsChan <- event:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// fetchContactsFromRelay fetches contacts for multiple users from a single relay
+// Returns a map of pubkey -> latest event from this relay
+func (c *Crawler) fetchContactsFromRelay(relay string, pubkeys []string) map[string]*nostr.Event {
+	if len(pubkeys) == 0 {
+		return nil
+	}
+
+	// Check if context is cancelled
+	select {
+	case <-c.ctx.Done():
+		return nil
+	default:
+	}
+
+	// Skip if relay is banned
+	if c.relayHealth.IsRelayBanned(relay) {
+		return nil
+	}
+
+	// Apply rate limiting for this specific relay
+	limiter := c.getRelayLimiter(relay)
+	if err := limiter.Wait(c.ctx); err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+	defer cancel()
+
+	filter := nostr.Filter{
+		Kinds:   []int{3},
+		Authors: pubkeys,
+	}
+
+	// Get the current pool from pool manager
+	pool := c.poolManager.GetPool()
+
+	// SubscribeMany returns a channel of RelayEvent
+	eventsChan := pool.FetchMany(ctx, []string{relay}, filter)
+
+	// Track relay usage
+	c.poolManager.TrackRelayUsage(relay)
+
+	// Collect events and keep only the latest for each pubkey
+	events := make(map[string]*nostr.Event)
+	timer := time.NewTimer(10 * time.Second) // Slightly less than context timeout
+	defer timer.Stop()
+	channelClosed := false
+
+	for {
+		select {
+		case relayEvent, ok := <-eventsChan:
+			if !ok {
+				// Check for relay connection error
+				if relayEvent.Relay != nil && relayEvent.Relay.ConnectionError != nil {
+					c.relayHealth.RecordFailure(relay, "connection error: "+relayEvent.Relay.ConnectionError.Error())
+				} else {
+					channelClosed = true
+					c.relayHealth.RecordSuccess(relay)
+				}
+				return events
+			}
+
+			ev := relayEvent.Event
+
+			// Keep only the latest event for each pubkey from this relay
+			if existing, exists := events[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
+				events[ev.PubKey] = ev
+			}
+		case <-timer.C:
+			// Timeout - this could indicate connection issues
+			if !channelClosed {
+				c.relayHealth.RecordFailure(relay, "timeout - no response")
+			}
+			return events
+		case <-ctx.Done():
+			// Context cancelled
+			if !channelClosed {
+				c.relayHealth.RecordFailure(relay, "context cancelled")
+			}
+			return events
+		}
+	}
+}
+
+// fetchRelayLists fetches kind:10002 events for a list of pubkeys.
+func (c *Crawler) fetchRelayLists(ctx context.Context, pubkeys []string) map[string]*nostr.Event {
+	filter := nostr.Filter{
+		Kinds:   []int{10002},
+		Authors: pubkeys,
+	}
+
+	// Get the current pool from pool manager
+	pool := c.poolManager.GetPool()
+
+	eventsChan := pool.FetchMany(ctx, c.relays, filter)
+
+	// Track relay usage for bootstrap relays
+	for _, relay := range c.relays {
+		c.poolManager.TrackRelayUsage(relay)
+	}
+
+	latestEvents := make(map[string]*nostr.Event)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case relayEvent, ok := <-eventsChan:
+			if !ok {
+				return latestEvents
+			}
+			ev := relayEvent.Event
+			if existing, ok := latestEvents[ev.PubKey]; !ok || ev.CreatedAt > existing.CreatedAt {
+				latestEvents[ev.PubKey] = ev
+			}
+		case <-timer.C:
+			return latestEvents
+		case <-ctx.Done():
+			return latestEvents
+		}
+	}
+}
+
+func (c *Crawler) calculateRelaysForPubkey(pubkey string, relayListEvent *nostr.Event) []string {
+	if relayListEvent == nil {
+		return c.relays
+	}
+
+	writeRelays := c.parseWriteRelays(relayListEvent)
+
+	// Assume too many relays means misconfiguration
+	if len(writeRelays) > 8 {
+		return c.relays
+	}
+
+	// Start with the user's valid write relays
+	finalRelays := c.relayHealth.FilterBannedRelays(writeRelays)
+
+	// If the user has fewer than 4 relays, supplement with defaults
+	if len(finalRelays) < 4 {
+		for _, bootstrapRelay := range c.relays {
+			if len(finalRelays) >= 4 {
+				break
+			}
+			if !slices.Contains(finalRelays, bootstrapRelay) {
+				finalRelays = append(finalRelays, bootstrapRelay)
+			}
+		}
+	}
+
+	return finalRelays
+}
+
+// parseWriteRelays extracts valid write relays from a kind:10002 event.
+func (c *Crawler) parseWriteRelays(event *nostr.Event) []string {
+	relays := []string{}
+	for _, tag := range event.Tags {
+		if len(tag) >= 2 && tag[0] == "r" {
+			// Exclude relays marked as "read" only.
+			if len(tag) > 2 && tag[2] == "read" {
+				continue
+			}
+			url := nostr.NormalizeURL(tag[1])
+			if c.isValidRelay(url) && !slices.Contains(relays, url) {
+				relays = append(relays, url)
+			}
+		}
+	}
+	return relays
+}
+
+// isValidRelay performs basic validation on a relay URL.
+func (c *Crawler) isValidRelay(url string) bool {
+	if !nostr.IsValidRelayURL(url) {
+		return false
+	}
+
+	// Exclude local and private network relays
+	invalidPatterns := []string{"127.0.0.1", "192.168.", "localhost", ".onion"}
+	for _, pattern := range invalidPatterns {
+		if strings.Contains(url, pattern) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// processKind3Event parses a kind:3 event and updates the database and work queue.
+func (c *Crawler) processKind3Event(ev *nostr.Event) {
+	if ev.Kind != 3 {
+		return
+	}
+
+	c.repo.UpsertPubkey(ev.PubKey)
+
+	c.processedMu.Lock()
+	c.processed[ev.PubKey] = time.Now()
+	c.processedMu.Unlock()
+
+	targetCount := 0
+	for _, tag := range ev.Tags {
+		if len(tag) >= 2 && tag[0] == "p" {
+			targetPubkey := tag[1]
+			if !nostr.IsValidPublicKey(targetPubkey) {
+				continue
+			}
+			if targetPubkey == ev.PubKey {
+				continue
+			}
+
+			c.repo.UpsertPubkey(targetPubkey)
+			c.repo.UpsertConnection(ev.PubKey, targetPubkey)
+
+			targetCount++
+
+			c.crawledMu.Lock()
+			c.crawled[targetPubkey] = true
+			c.crawledMu.Unlock()
+		}
+	}
+}
+
+// --- Utility Functions ---
+
+// statusReporter periodically logs crawler statistics
+func (c *Crawler) statusReporter() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.processedMu.Lock()
+			processedCount := len(c.processed)
+			c.processedMu.Unlock()
+
+			c.crawledMu.Lock()
+			crawledCount := len(c.crawled)
+			c.crawledMu.Unlock()
+
+			totalFailed, banned := c.relayHealth.GetStats()
+			connectedRelayCount := c.poolManager.GetConnectedRelayCount()
+
+			if totalFailed > 0 {
+				log.Printf("[STATUS] Crawled: %d | Processed: %d | Connected relays: %d | Failed relays: %d (%d banned)",
+					crawledCount, processedCount, connectedRelayCount, totalFailed, banned)
+			} else {
+				log.Printf("[STATUS] Crawled: %d | Processed: %d | Connected relays: %d",
+					crawledCount, processedCount, connectedRelayCount)
+			}
+		case <-c.ctx.Done():
+			return
+		}
+	}
 }

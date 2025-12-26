@@ -96,3 +96,14 @@ func (t *RelayHealthTracker) GetStats() (total int, banned int) {
 	}
 	return
 }
+
+// FilterBannedRelays removes banned relays from the list
+func (t *RelayHealthTracker) FilterBannedRelays(relays []string) []string {
+	filtered := make([]string, 0, len(relays))
+	for _, relay := range relays {
+		if !t.IsRelayBanned(relay) {
+			filtered = append(filtered, relay)
+		}
+	}
+	return filtered
+}

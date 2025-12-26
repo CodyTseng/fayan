@@ -115,3 +115,8 @@ func (pm *PoolManager) Stop() {
 		delete(pm.relayUsage, url)
 	}
 }
+
+// Get current number of connected relays
+func (pm *PoolManager) GetConnectedRelayCount() int {
+	return len(pm.relayUsage)
+}
