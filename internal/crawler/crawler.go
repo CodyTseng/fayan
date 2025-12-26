@@ -40,6 +40,10 @@ type Crawler struct {
 	consecutiveEmpty int
 	sleepDuration    time.Duration
 
+	paused   bool
+	pausedMu sync.RWMutex
+	pauseCh  chan struct{}
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -66,6 +70,7 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 		relayHealth:      NewRelayHealthTracker(),
 		consecutiveEmpty: 0,
 		sleepDuration:    5 * time.Second,
+		pauseCh:          make(chan struct{}),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
@@ -88,6 +93,46 @@ func (c *Crawler) Stop() {
 	time.Sleep(2 * time.Second)
 
 	log.Println("[CRAWLER] Shutdown complete")
+}
+
+// Pause temporarily stops the crawler from fetching new data
+func (c *Crawler) Pause() {
+	c.pausedMu.Lock()
+	defer c.pausedMu.Unlock()
+	if !c.paused {
+		c.paused = true
+		c.pauseCh = make(chan struct{})
+		log.Println("[CRAWLER] Paused")
+	}
+}
+
+// Resume resumes the crawler after being paused
+func (c *Crawler) Resume() {
+	c.pausedMu.Lock()
+	defer c.pausedMu.Unlock()
+	if c.paused {
+		c.paused = false
+		close(c.pauseCh)
+		log.Println("[CRAWLER] Resumed")
+	}
+}
+
+// waitIfPaused blocks if the crawler is paused, returns true if context was cancelled
+func (c *Crawler) waitIfPaused() bool {
+	c.pausedMu.RLock()
+	paused := c.paused
+	pauseCh := c.pauseCh
+	c.pausedMu.RUnlock()
+
+	if paused {
+		select {
+		case <-pauseCh:
+			return false
+		case <-c.ctx.Done():
+			return true
+		}
+	}
+	return false
 }
 
 // getRelayLimiter returns a rate limiter for a specific relay, creating one if needed
@@ -125,6 +170,11 @@ func (c *Crawler) networkWorker() {
 		case <-c.ctx.Done():
 			return
 		default:
+		}
+
+		// Check if paused
+		if c.waitIfPaused() {
+			return
 		}
 
 		randomPubkeys, err := c.repo.RandomPubkeys(batchSize)
@@ -173,6 +223,11 @@ func (c *Crawler) resultProcessor() {
 				c.processKind3Event(event)
 			}
 		case <-c.ctx.Done():
+			return
+		}
+
+		// Check if paused
+		if c.waitIfPaused() {
 			return
 		}
 	}

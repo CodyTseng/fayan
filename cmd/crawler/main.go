@@ -68,12 +68,14 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
+			c.Pause()
 			log.Println("[RANK] Starting periodic calculation...")
 			if err := calculator.Calculate(); err != nil {
 				log.Printf("[RANK] Calculation failed: %v", err)
 			} else {
 				log.Println("[RANK] Calculation completed")
 			}
+			c.Resume()
 		case <-sigChan:
 			log.Println("\n[MAIN] Shutdown signal received")
 			c.Stop()
