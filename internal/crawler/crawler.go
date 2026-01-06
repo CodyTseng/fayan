@@ -2,15 +2,18 @@ package crawler
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"fayan/config"
 	"fayan/internal/repository"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/sdk"
 	"golang.org/x/time/rate"
 )
 
@@ -27,7 +30,9 @@ type Crawler struct {
 	poolManager   *PoolManager
 	relays        []string
 	seedPubkeys   []string
+	searchConfig  *config.SearchConfig
 	resultsChan   chan *nostr.Event
+	profilesChan  chan *nostr.Event
 	crawled       map[string]bool
 	crawledMu     sync.Mutex
 	processed     map[string]time.Time
@@ -49,7 +54,7 @@ type Crawler struct {
 }
 
 // NewCrawler creates a new Crawler instance.
-func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string) *Crawler {
+func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig) *Crawler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	relayOptions := []nostr.RelayOption{
@@ -63,7 +68,9 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 		poolManager:      poolManager,
 		relays:           relays,
 		seedPubkeys:      seedPubkeys,
+		searchConfig:     searchConfig,
 		resultsChan:      make(chan *nostr.Event, resultChanSize),
+		profilesChan:     make(chan *nostr.Event, resultChanSize),
 		crawled:          make(map[string]bool),
 		processed:        make(map[string]time.Time),
 		relayLimiters:    make(map[string]*rate.Limiter),
@@ -88,6 +95,7 @@ func (c *Crawler) Stop() {
 
 	// Close the results channel
 	close(c.resultsChan)
+	close(c.profilesChan)
 
 	// Give some time for goroutines to finish
 	time.Sleep(2 * time.Second)
@@ -157,6 +165,11 @@ func (c *Crawler) Start() {
 	// Multiple goroutines for processing results
 	for range numProcessors {
 		go c.resultProcessor()
+	}
+
+	// Profile processor for search functionality
+	if c.searchConfig != nil && c.searchConfig.Enabled {
+		go c.profileProcessor()
 	}
 
 	// Status reporter
@@ -265,23 +278,31 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 		}
 	}
 
-	// Step 3: Fetch contacts from each relay concurrently
+	// Step 3: Fetch contacts (and profiles if search is enabled) from each relay concurrently
 	// Collect results from all relays
 	contactEvents := make(map[string]*nostr.Event)
+	profileEvents := make(map[string]*nostr.Event)
 	var wg sync.WaitGroup
 	var eventsMu sync.Mutex // Protect concurrent map writes
+
+	fetchProfiles := c.searchConfig != nil && c.searchConfig.Enabled
 
 	for relay, users := range relayToUsers {
 		wg.Add(1)
 		go func(r string, u []string) {
 			defer wg.Done()
-			events := c.fetchContactsFromRelay(r, u)
+			contacts, profiles := c.fetchEventsFromRelay(r, u, fetchProfiles)
 
 			// Use mutex to protect map access
 			eventsMu.Lock()
-			for pubkey, event := range events {
+			for pubkey, event := range contacts {
 				if existing, exists := contactEvents[pubkey]; !exists || event.CreatedAt > existing.CreatedAt {
 					contactEvents[pubkey] = event
+				}
+			}
+			for pubkey, event := range profiles {
+				if existing, exists := profileEvents[pubkey]; !exists || event.CreatedAt > existing.CreatedAt {
+					profileEvents[pubkey] = event
 				}
 			}
 			eventsMu.Unlock()
@@ -299,38 +320,55 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 			return
 		}
 	}
+
+	// Send profile events to profile processor
+	if fetchProfiles {
+		for _, event := range profileEvents {
+			select {
+			case c.profilesChan <- event:
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}
 }
 
-// fetchContactsFromRelay fetches contacts for multiple users from a single relay
-// Returns a map of pubkey -> latest event from this relay
-func (c *Crawler) fetchContactsFromRelay(relay string, pubkeys []string) map[string]*nostr.Event {
+// fetchEventsFromRelay fetches contacts (kind 3) and optionally profiles (kind 0) for multiple users from a single relay
+// Returns maps of pubkey -> latest event for contacts and profiles
+func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProfiles bool) (map[string]*nostr.Event, map[string]*nostr.Event) {
 	if len(pubkeys) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Check if context is cancelled
 	select {
 	case <-c.ctx.Done():
-		return nil
+		return nil, nil
 	default:
 	}
 
 	// Skip if relay is banned
 	if c.relayHealth.IsRelayBanned(relay) {
-		return nil
+		return nil, nil
 	}
 
 	// Apply rate limiting for this specific relay
 	limiter := c.getRelayLimiter(relay)
 	if err := limiter.Wait(c.ctx); err != nil {
-		return nil
+		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 	defer cancel()
 
+	// Build filter with kinds 3 (contacts) and optionally 0 (profiles)
+	kinds := []int{3}
+	if fetchProfiles {
+		kinds = append(kinds, 0)
+	}
+
 	filter := nostr.Filter{
-		Kinds:   []int{3},
+		Kinds:   kinds,
 		Authors: pubkeys,
 	}
 
@@ -344,7 +382,8 @@ func (c *Crawler) fetchContactsFromRelay(relay string, pubkeys []string) map[str
 	c.poolManager.TrackRelayUsage(relay)
 
 	// Collect events and keep only the latest for each pubkey
-	events := make(map[string]*nostr.Event)
+	contacts := make(map[string]*nostr.Event)
+	profiles := make(map[string]*nostr.Event)
 	timer := time.NewTimer(10 * time.Second) // Slightly less than context timeout
 	defer timer.Stop()
 	channelClosed := false
@@ -360,27 +399,34 @@ func (c *Crawler) fetchContactsFromRelay(relay string, pubkeys []string) map[str
 					channelClosed = true
 					c.relayHealth.RecordSuccess(relay)
 				}
-				return events
+				return contacts, profiles
 			}
 
 			ev := relayEvent.Event
 
 			// Keep only the latest event for each pubkey from this relay
-			if existing, exists := events[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
-				events[ev.PubKey] = ev
+			switch ev.Kind {
+			case 3:
+				if existing, exists := contacts[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
+					contacts[ev.PubKey] = ev
+				}
+			case 0:
+				if existing, exists := profiles[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
+					profiles[ev.PubKey] = ev
+				}
 			}
 		case <-timer.C:
 			// Timeout - this could indicate connection issues
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "timeout - no response")
 			}
-			return events
+			return contacts, profiles
 		case <-ctx.Done():
 			// Context cancelled
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "context cancelled")
 			}
-			return events
+			return contacts, profiles
 		}
 	}
 }
@@ -521,6 +567,76 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 			c.crawled[targetPubkey] = true
 			c.crawledMu.Unlock()
 		}
+	}
+}
+
+// profileProcessor handles processing of profile events (kind 0)
+func (c *Crawler) profileProcessor() {
+	for {
+		select {
+		case event, ok := <-c.profilesChan:
+			if !ok {
+				return // Channel closed, exit
+			}
+			if event != nil {
+				c.processKind0Event(event)
+			}
+		case <-c.ctx.Done():
+			return
+		}
+
+		// Check if paused
+		if c.waitIfPaused() {
+			return
+		}
+	}
+}
+
+// processKind0Event parses a kind:0 event and stores the user profile
+func (c *Crawler) processKind0Event(ev *nostr.Event) {
+	if ev.Kind != 0 {
+		return
+	}
+
+	// Check if search is enabled
+	if c.searchConfig == nil || !c.searchConfig.Enabled {
+		return
+	}
+
+	meta, err := sdk.ParseMetadata(ev)
+	if err != nil {
+		// Invalid metadata, skip
+		return
+	}
+
+	// Skip if no useful profile information for search
+	if meta.Name == "" && meta.DisplayName == "" && meta.NIP05 == "" {
+		return
+	}
+
+	// If top percentile filtering is enabled
+	if c.searchConfig.TopPercentile > 0 {
+		// Check if user is in top percentile before saving
+		inTop, err := c.repo.IsUserInTopPercentile(ev.PubKey, c.searchConfig.TopPercentile)
+		if err != nil {
+			// Log but don't save on error
+			log.Printf("[CRAWLER] Error checking user percentile: %v", err)
+			return
+		}
+		if !inTop {
+			return
+		}
+	}
+
+	// Serialize the full event to JSON
+	eventJSON, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+
+	// Store the profile with searchable fields and full event
+	if err := c.repo.UpsertUserProfile(ev.PubKey, meta.Name, meta.DisplayName, meta.NIP05, string(eventJSON)); err != nil {
+		log.Printf("[CRAWLER] Error storing profile for %s: %v", ev.PubKey, err)
 	}
 }
 

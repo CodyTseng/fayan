@@ -171,6 +171,34 @@ func (r *Repository) GetTotalUsers() (int, error) {
 	return count, nil
 }
 
+// GetTotalUsersCached returns the cached total number of users.
+func (r *Repository) GetTotalUsersCached() (int, error) {
+	r.totalUsersCache.mu.RLock()
+	if time.Now().Before(r.totalUsersCache.expiry) {
+		count := r.totalUsersCache.count
+		r.totalUsersCache.mu.RUnlock()
+		return count, nil
+	}
+	r.totalUsersCache.mu.RUnlock()
+
+	count, err := r.GetTotalUsers()
+	if err != nil {
+		return 0, err
+	}
+
+	// If the count is small, no need to cache
+	if count <= 10_000 {
+		return count, nil
+	}
+
+	r.totalUsersCache.mu.Lock()
+	r.totalUsersCache.count = count
+	r.totalUsersCache.expiry = time.Now().Add(r.totalUsersCache.ttl)
+	r.totalUsersCache.mu.Unlock()
+
+	return count, nil
+}
+
 // RandomPubkeys retrieves a random sample of pubkeys from the database.
 func (r *Repository) RandomPubkeys(limit int) ([]string, error) {
 	var count int64

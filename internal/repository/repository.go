@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -19,9 +20,18 @@ const (
 	ModeReadOnly
 )
 
+// totalUsersCache caches the count of users
+type totalUsersCache struct {
+	count  int
+	expiry time.Time
+	mu     sync.RWMutex
+	ttl    time.Duration
+}
+
 // Repository handles all database operations
 type Repository struct {
-	db *sql.DB
+	db              *sql.DB
+	totalUsersCache *totalUsersCache
 }
 
 // New creates a new Repository instance
@@ -74,7 +84,12 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 		}
 	}
 
-	return &Repository{db: db}, nil
+	return &Repository{
+		db: db,
+		totalUsersCache: &totalUsersCache{
+			ttl: 5 * time.Minute,
+		},
+	}, nil
 }
 
 // DB returns the underlying database connection (for backward compatibility)
@@ -130,11 +145,27 @@ func createTables(db *sql.DB) error {
 		PRIMARY KEY(source_pubkey, target_pubkey)
 	);`
 
+	// User profiles FTS5 table for full-text search
+	// Uses trigram tokenizer for CJK (Chinese, Japanese, Korean) support
+	userProfilesTable := `
+	CREATE VIRTUAL TABLE IF NOT EXISTS user_profiles USING fts5(
+		pubkey UNINDEXED,
+		name,
+		display_name,
+		nip05,
+		event UNINDEXED,
+		tokenize='trigram'
+	);`
+
 	if _, err := db.Exec(pubkeysTable); err != nil {
 		return err
 	}
 
 	if _, err := db.Exec(connectionsTable); err != nil {
+		return err
+	}
+
+	if _, err := db.Exec(userProfilesTable); err != nil {
 		return err
 	}
 

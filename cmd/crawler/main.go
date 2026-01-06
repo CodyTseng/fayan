@@ -52,7 +52,7 @@ func main() {
 	}
 
 	// 5. Start the Nostr Crawler
-	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys)
+	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys, &cfg.Search)
 	c.Start()
 
 	// 6. Periodically Calculate Ranks

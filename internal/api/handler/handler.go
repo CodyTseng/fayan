@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"fayan/config"
 	"fayan/internal/cache"
 	"fayan/internal/models"
 	"fayan/internal/repository"
@@ -17,15 +19,17 @@ import (
 
 // Handler contains dependencies for HTTP handlers
 type Handler struct {
-	repo  *repository.Repository
-	cache *cache.Cache
+	repo         *repository.Repository
+	cache        *cache.Cache
+	searchConfig *config.SearchConfig
 }
 
 // New creates a new Handler instance
-func New(repo *repository.Repository, cache *cache.Cache) *Handler {
+func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.SearchConfig) *Handler {
 	return &Handler{
-		repo:  repo,
-		cache: cache,
+		repo:         repo,
+		cache:        cache,
+		searchConfig: searchConfig,
 	}
 }
 
@@ -109,6 +113,7 @@ func buildUserResponse(user *models.UserInfo, totalUsers int) *UserResponse {
 	if user.Rank != nil && totalUsers > 0 {
 		percentile = int(float64(totalUsers-*user.Rank) / float64(totalUsers) * 100)
 	}
+
 	return &UserResponse{
 		Pubkey:     user.Pubkey,
 		Rank:       user.Rank,
@@ -258,4 +263,88 @@ func writeError(w http.ResponseWriter, status int, message string) {
 		Message: message,
 	}
 	writeJSON(w, status, response)
+}
+
+// SearchResponse represents a single search result with the raw event
+type SearchUserResponse struct {
+	Event      json.RawMessage `json:"event"`
+	Pubkey     string          `json:"pubkey"`
+	Rank       *int            `json:"rank,omitempty"`
+	Percentile int             `json:"percentile"`
+	Followers  int             `json:"followers"`
+	Following  int             `json:"following"`
+}
+
+// buildUserResponse creates a UserResponse from a user model
+func buildSearchUserResponse(user *models.UserProfile, totalUsers int) *SearchUserResponse {
+	percentile := 0
+	if user.Rank != nil && totalUsers > 0 {
+		percentile = int(float64(totalUsers-*user.Rank) / float64(totalUsers) * 100)
+	}
+
+	return &SearchUserResponse{
+		Event:      json.RawMessage(user.Event),
+		Pubkey:     user.Pubkey,
+		Rank:       user.Rank,
+		Percentile: percentile,
+		Followers:  user.Followers,
+		Following:  user.Following,
+	}
+}
+
+// Search handles GET /search?q=query&limit=20 requests for user search
+func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Check if search is enabled
+	if h.searchConfig == nil || !h.searchConfig.Enabled {
+		writeError(w, http.StatusServiceUnavailable, "Search feature is disabled")
+		return
+	}
+
+	// Get query parameter
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "Query parameter 'q' is required")
+		return
+	}
+
+	// Get limit parameter (default 20, max 100)
+	limit := 20
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+			if limit > 100 {
+				limit = 100
+			}
+		}
+	}
+
+	// Search users
+	users, err := h.repo.SearchUsers(query, limit)
+	if err != nil {
+		log.Printf("[API] Error searching users: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to search users")
+		return
+	}
+
+	// Get total users for percentile calculation
+	totalUsers, err := h.cache.GetTotalUsers(func() (int, error) {
+		return h.repo.GetTotalUsers()
+	})
+	if err != nil {
+		log.Printf("[API] Error getting total users: %v", err)
+		totalUsers = 0
+	}
+
+	// Build response with raw events
+	response := make([]*SearchUserResponse, 0, len(users))
+	for _, user := range users {
+		response = append(response, buildSearchUserResponse(user, totalUsers))
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }

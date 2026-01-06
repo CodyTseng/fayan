@@ -9,6 +9,14 @@ pagerank_interval: 10
 # API server port
 port: ":9090"
 
+# User search configuration
+search:
+  # Enable user search feature (default: false)
+  enabled: false
+  # Only index users in top X% reputation for search (default: 90)
+  # Lower values mean stricter filtering, reducing database size
+  top_percentile: 90
+
 # Default nostr relays to connect to, used for searching uesrs' relay lists
 relays:
   - wss://relay.damus.io/

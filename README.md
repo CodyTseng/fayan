@@ -15,10 +15,11 @@ A TrustRank & PageRank based reputation system for Nostr.
 
 ## API
 
-| Method | Path                    | Description       |
-| ------ | ----------------------- | ----------------- |
-| GET    | `/users/{pubkeyOrNpub}` | Query single user |
-| POST   | `/users`                | Batch query users |
+| Method | Path                    | Description          |
+| ------ | ----------------------- | -------------------- |
+| GET    | `/users/{pubkeyOrNpub}` | Query single user    |
+| POST   | `/users`                | Batch query users    |
+| GET    | `/search?q=...`         | Search users by name |
 
 > Offical server: `https://fayan.jumble.social/`
 
@@ -102,6 +103,55 @@ All endpoints return the following format on error:
 }
 ```
 
+### Search Users
+
+**GET** `/search?q={query}&limit={limit}`
+
+Search for users by name, display name, or NIP-05 identifier. Results are sorted by a combination of relevance and reputation score.
+
+> **Note:** This feature is disabled by default. Enable it in `config.yaml` by setting `search.enabled: true`.
+
+**Query Parameters:**
+
+| Parameter | Type   | Required | Default | Description                     |
+| --------- | ------ | -------- | ------- | ------------------------------- |
+| q         | string | Yes      | -       | Search query                    |
+| limit     | int    | No       | 20      | Max results to return (max 100) |
+
+**Response Fields:**
+
+| Field      | Type   | Description            |
+| ---------- | ------ | ---------------------- |
+| event      | object | Raw Nostr kind 0 event |
+| pubkey     | string | User public key (hex)  |
+| rank       | int    | Rank (lower is better) |
+| percentile | int    | Percentile (0-100)     |
+| followers  | int    | Number of followers    |
+| following  | int    | Number of following    |
+
+**Response Example:**
+
+```json
+[
+  {
+    "event": {
+      "id": "...",
+      "pubkey": "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
+      "created_at": 1704067200,
+      "kind": 0,
+      "tags": [],
+      "content": "{\"name\":\"xxx\",\"about\":\"...\",\"picture\":\"...\"}",
+      "sig": "..."
+    },
+    "pubkey": "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
+    "rank": 1,
+    "percentile": 100,
+    "followers": 1000,
+    "following": 10
+  }
+]
+```
+
 ## How to Run
 
 ### Local Build & Run
@@ -133,6 +183,18 @@ This will start both crawler and API services. API is mapped to local port 9090 
 ## Configuration
 
 The application is configured through the `config.yaml` file.
+
+### Search Configuration
+
+The user search feature is disabled by default. To enable it, add the following to your `config.yaml`:
+
+```yaml
+search:
+  enabled: true # Enable user search feature
+  top_percentile: 50 # Only index users in top X% reputation (default: 50)
+```
+
+The `top_percentile` setting controls which users' profiles are stored in the search index. Lower values mean stricter filtering, which reduces database size but may exclude more users from search results.
 
 ## License
 

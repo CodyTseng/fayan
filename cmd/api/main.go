@@ -31,13 +31,14 @@ func main() {
 	// Initialize cache
 	apiCache := cache.New(10*time.Minute, 10*time.Minute)
 
-	// Initialize handler
-	h := handler.New(repo, apiCache)
+	// Initialize handler with search config
+	h := handler.New(repo, apiCache, &cfg.Search)
 
 	// Setup HTTP routes
 	http.HandleFunc("/health", middleware.CORS(h.Health))
 	http.HandleFunc("/users", middleware.CORS(h.Users))
 	http.HandleFunc("/users/", middleware.CORS(h.User))
+	http.HandleFunc("/search", middleware.CORS(h.Search))
 	http.HandleFunc("/", middleware.CORS(h.User)) // deprecated
 
 	// Start server
