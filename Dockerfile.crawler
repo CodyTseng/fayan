@@ -13,8 +13,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the crawler binary
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/fayan-crawler ./cmd/crawler/main.go
+# Build the crawler binary with FTS5 enabled
+RUN CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" GOOS=linux go build -a -installsuffix cgo -o /build/fayan-crawler ./cmd/crawler/main.go
 
 # Final stage
 FROM alpine:latest

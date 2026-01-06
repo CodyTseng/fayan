@@ -14,8 +14,8 @@ RUN go mod download
 COPY . .
 
 # Build the crawler and API binaries
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/fayan-crawler ./cmd/crawler/main.go
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/fayan-api ./cmd/api/main.go
+RUN CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" GOOS=linux go build -a -installsuffix cgo -o /build/fayan-crawler ./cmd/crawler/main.go
+RUN CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" GOOS=linux go build -a -installsuffix cgo -o /build/fayan-api ./cmd/api/main.go
 
 # Final stage
 FROM alpine:latest
