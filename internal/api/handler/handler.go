@@ -292,7 +292,7 @@ func buildSearchUserResponse(user *models.UserProfile, totalUsers int) *SearchUs
 	}
 }
 
-// Search handles GET /search?q=query&limit=20 requests for user search
+// Search handles GET /search?q=query&limit=20&offset=20 requests for user search
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -316,15 +316,20 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	limit := 20
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-			limit = parsedLimit
-			if limit > 100 {
-				limit = 100
-			}
+			limit = min(parsedLimit, 100)
+		}
+	}
+
+	// Get offset parameter (default 0)
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if parsedOffset, err := strconv.Atoi(offsetStr); err == nil && parsedOffset >= 0 {
+			offset = parsedOffset
 		}
 	}
 
 	// Search users
-	users, err := h.repo.SearchUsers(query, limit)
+	users, err := h.repo.SearchUsers(query, limit, offset)
 	if err != nil {
 		log.Printf("[API] Error searching users: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to search users")
@@ -343,7 +348,11 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	// Build response with raw events
 	response := make([]*SearchUserResponse, 0, len(users))
 	for _, user := range users {
-		response = append(response, buildSearchUserResponse(user, totalUsers))
+		item := buildSearchUserResponse(user, totalUsers)
+		if item.Percentile < h.searchConfig.TopPercentile {
+			continue
+		}
+		response = append(response, item)
 	}
 
 	writeJSON(w, http.StatusOK, response)

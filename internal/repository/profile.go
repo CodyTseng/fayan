@@ -23,7 +23,8 @@ func (r *Repository) UpsertUserProfile(pubkey, name, displayName, nip05, event s
 // SearchUsers searches for users by name, display_name or nip05 using FTS5.
 // Results are sorted by a combination of relevance and reputation score.
 // limit specifies the maximum number of results to return.
-func (r *Repository) SearchUsers(query string, limit int) ([]*models.UserProfile, error) {
+// offset specifies the number of results to skip (for pagination).
+func (r *Repository) SearchUsers(query string, limit int, offset int) ([]*models.UserProfile, error) {
 	if query == "" || limit <= 0 {
 		return []*models.UserProfile{}, nil
 	}
@@ -49,9 +50,10 @@ func (r *Repository) SearchUsers(query string, limit int) ([]*models.UserProfile
 			JOIN pubkeys p ON up.pubkey = p.pubkey
 			WHERE up.name LIKE ? OR up.display_name LIKE ? OR up.nip05 LIKE ?
 			ORDER BY p.score DESC
-			LIMIT ?;
+			LIMIT ?
+			OFFSET ?;
 		`
-		rows, err = r.db.Query(sqlQuery, searchPattern, searchPattern, searchPattern, limit)
+		rows, err = r.db.Query(sqlQuery, searchPattern, searchPattern, searchPattern, limit, offset)
 	} else {
 		// For queries with 3+ characters, use FTS5 trigram search
 		searchTerm := escapeFTS5Query(query)
@@ -67,9 +69,10 @@ func (r *Repository) SearchUsers(query string, limit int) ([]*models.UserProfile
 			JOIN pubkeys p ON up.pubkey = p.pubkey
 			WHERE user_profiles MATCH ?
 			ORDER BY (bm25(user_profiles) * 0.3 + p.score * 0.7) DESC, p.score DESC
-			LIMIT ?;
+			LIMIT ?
+			OFFSET ?;
 		`
-		rows, err = r.db.Query(sqlQuery, searchTerm, limit)
+		rows, err = r.db.Query(sqlQuery, searchTerm, limit, offset)
 	}
 
 	if err != nil {
