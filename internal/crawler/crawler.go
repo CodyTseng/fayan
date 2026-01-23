@@ -18,10 +18,16 @@ import (
 )
 
 const (
-	batchSize      = 200
-	reqRate        = 2 * time.Second
-	numProcessors  = 4
-	resultChanSize = 1000
+	batchSize = 200
+	reqRate   = 2 * time.Second
+
+	// Processor counts
+	numContactProcessors = 4
+	numProfileProcessors = 2
+
+	// Channel buffer sizes (based on batchSize)
+	contactsChanSize = batchSize * 3                        // ~3 batches buffer
+	profilesChanSize = batchSize * numProfileProcessors * 2 // larger buffer for slower processing
 )
 
 // Crawler manages the recursive crawling of the Nostr network.
@@ -31,8 +37,8 @@ type Crawler struct {
 	relays        []string
 	seedPubkeys   []string
 	searchConfig  *config.SearchConfig
-	resultsChan   chan *nostr.Event
-	profilesChan  chan *nostr.Event
+	contactsChan chan *nostr.Event
+	profilesChan chan *nostr.Event
 	crawled       map[string]bool
 	crawledMu     sync.Mutex
 	processed     map[string]time.Time
@@ -45,9 +51,12 @@ type Crawler struct {
 	consecutiveEmpty int
 	sleepDuration    time.Duration
 
+	// Pause control using sync.Cond for safer synchronization
 	paused   bool
-	pausedMu sync.RWMutex
-	pauseCh  chan struct{}
+	pauseCond *sync.Cond
+
+	// WaitGroup for tracking worker goroutines
+	wg sync.WaitGroup
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -63,83 +72,108 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 
 	poolManager := NewPoolManager(ctx, relayOptions...)
 
-	return &Crawler{
+	c := &Crawler{
 		repo:             repo,
 		poolManager:      poolManager,
 		relays:           relays,
 		seedPubkeys:      seedPubkeys,
 		searchConfig:     searchConfig,
-		resultsChan:      make(chan *nostr.Event, resultChanSize),
-		profilesChan:     make(chan *nostr.Event, resultChanSize),
+		contactsChan:     make(chan *nostr.Event, contactsChanSize),
+		profilesChan:     make(chan *nostr.Event, profilesChanSize),
 		crawled:          make(map[string]bool),
 		processed:        make(map[string]time.Time),
 		relayLimiters:    make(map[string]*rate.Limiter),
 		relayHealth:      NewRelayHealthTracker(),
 		consecutiveEmpty: 0,
 		sleepDuration:    5 * time.Second,
-		pauseCh:          make(chan struct{}),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+	c.pauseCond = sync.NewCond(&sync.Mutex{})
+	return c
 }
 
 // Stop gracefully shuts down the crawler and cleans up connections
 func (c *Crawler) Stop() {
 	log.Println("[CRAWLER] Shutting down...")
 
-	// Cancel the context to stop all operations
+	// Cancel the context to signal all goroutines to stop
 	c.cancel()
+
+	// Wake up any goroutines waiting on pause condition
+	c.pauseCond.L.Lock()
+	c.paused = false
+	c.pauseCond.Broadcast()
+	c.pauseCond.L.Unlock()
+
+	// Wait for all worker goroutines to finish
+	c.wg.Wait()
+
+	// Now it's safe to close channels (no more senders)
+	close(c.contactsChan)
+	close(c.profilesChan)
 
 	// Stop the pool manager (this will close all relay connections)
 	c.poolManager.Stop()
-
-	// Close the results channel
-	close(c.resultsChan)
-	close(c.profilesChan)
-
-	// Give some time for goroutines to finish
-	time.Sleep(2 * time.Second)
 
 	log.Println("[CRAWLER] Shutdown complete")
 }
 
 // Pause temporarily stops the crawler from fetching new data
 func (c *Crawler) Pause() {
-	c.pausedMu.Lock()
-	defer c.pausedMu.Unlock()
+	c.pauseCond.L.Lock()
+	defer c.pauseCond.L.Unlock()
 	if !c.paused {
 		c.paused = true
-		c.pauseCh = make(chan struct{})
 		log.Println("[CRAWLER] Paused")
 	}
 }
 
 // Resume resumes the crawler after being paused
 func (c *Crawler) Resume() {
-	c.pausedMu.Lock()
-	defer c.pausedMu.Unlock()
+	c.pauseCond.L.Lock()
+	defer c.pauseCond.L.Unlock()
 	if c.paused {
 		c.paused = false
-		close(c.pauseCh)
+		c.pauseCond.Broadcast()
 		log.Println("[CRAWLER] Resumed")
 	}
 }
 
 // waitIfPaused blocks if the crawler is paused, returns true if context was cancelled
 func (c *Crawler) waitIfPaused() bool {
-	c.pausedMu.RLock()
-	paused := c.paused
-	pauseCh := c.pauseCh
-	c.pausedMu.RUnlock()
-
-	if paused {
+	c.pauseCond.L.Lock()
+	for c.paused {
+		// Check context before waiting
 		select {
-		case <-pauseCh:
-			return false
 		case <-c.ctx.Done():
+			c.pauseCond.L.Unlock()
 			return true
+		default:
+		}
+
+		// Use a goroutine to check context while waiting
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-c.ctx.Done():
+				c.pauseCond.Broadcast() // Wake up the waiting goroutine
+			case <-done:
+			}
+		}()
+
+		c.pauseCond.Wait()
+		close(done)
+
+		// Check if we were woken up due to context cancellation
+		select {
+		case <-c.ctx.Done():
+			c.pauseCond.L.Unlock()
+			return true
+		default:
 		}
 	}
+	c.pauseCond.L.Unlock()
 	return false
 }
 
@@ -160,19 +194,33 @@ func (c *Crawler) getRelayLimiter(relay string) *rate.Limiter {
 // Start begins the crawling process.
 func (c *Crawler) Start() {
 	// Single goroutine for network operations to avoid rate limiting
-	go c.networkWorker()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.networkWorker()
+	}()
 
-	// Multiple goroutines for processing results
-	for range numProcessors {
-		go c.resultProcessor()
+	// Multiple goroutines for processing contact events
+	for range numContactProcessors {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.contactProcessor()
+		}()
 	}
 
-	// Profile processor for search functionality
+	// Multiple goroutines for processing profile events (search functionality)
 	if c.searchConfig != nil && c.searchConfig.Enabled {
-		go c.profileProcessor()
+		for range numProfileProcessors {
+			c.wg.Add(1)
+			go func() {
+				defer c.wg.Done()
+				c.profileProcessor()
+			}()
+		}
 	}
 
-	// Status reporter
+	// Status reporter (not tracked in wg since it's non-critical)
 	go c.statusReporter()
 }
 
@@ -224,11 +272,18 @@ func (c *Crawler) networkWorker() {
 	}
 }
 
-// resultProcessor handles processing of contact events (database writes, queue management)
-func (c *Crawler) resultProcessor() {
+// contactProcessor handles processing of contact events (kind 3)
+func (c *Crawler) contactProcessor() {
 	for {
+		// Check if paused before processing
+		if c.waitIfPaused() {
+			// Context was cancelled while paused, drain remaining events
+			c.drainContactsChan()
+			return
+		}
+
 		select {
-		case event, ok := <-c.resultsChan:
+		case event, ok := <-c.contactsChan:
 			if !ok {
 				return // Channel closed, exit
 			}
@@ -236,11 +291,25 @@ func (c *Crawler) resultProcessor() {
 				c.processKind3Event(event)
 			}
 		case <-c.ctx.Done():
+			// Context cancelled, drain remaining events before exiting
+			c.drainContactsChan()
 			return
 		}
+	}
+}
 
-		// Check if paused
-		if c.waitIfPaused() {
+// drainContactsChan processes any remaining events in the contacts channel
+func (c *Crawler) drainContactsChan() {
+	for {
+		select {
+		case event, ok := <-c.contactsChan:
+			if !ok {
+				return
+			}
+			if event != nil {
+				c.processKind3Event(event)
+			}
+		default:
 			return
 		}
 	}
@@ -315,7 +384,7 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 	// Step 5: Check against global timestamps and send to processors
 	for _, event := range contactEvents {
 		select {
-		case c.resultsChan <- event:
+		case c.contactsChan <- event:
 		case <-c.ctx.Done():
 			return
 		}
@@ -573,6 +642,13 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 // profileProcessor handles processing of profile events (kind 0)
 func (c *Crawler) profileProcessor() {
 	for {
+		// Check if paused before processing
+		if c.waitIfPaused() {
+			// Context was cancelled while paused, drain remaining events
+			c.drainProfilesChan()
+			return
+		}
+
 		select {
 		case event, ok := <-c.profilesChan:
 			if !ok {
@@ -582,11 +658,25 @@ func (c *Crawler) profileProcessor() {
 				c.processKind0Event(event)
 			}
 		case <-c.ctx.Done():
+			// Context cancelled, drain remaining events before exiting
+			c.drainProfilesChan()
 			return
 		}
+	}
+}
 
-		// Check if paused
-		if c.waitIfPaused() {
+// drainProfilesChan processes any remaining events in the profiles channel
+func (c *Crawler) drainProfilesChan() {
+	for {
+		select {
+		case event, ok := <-c.profilesChan:
+			if !ok {
+				return
+			}
+			if event != nil {
+				c.processKind0Event(event)
+			}
+		default:
 			return
 		}
 	}
