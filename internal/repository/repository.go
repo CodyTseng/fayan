@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,11 +33,33 @@ type totalUsersCache struct {
 type Repository struct {
 	db              *sql.DB
 	totalUsersCache *totalUsersCache
+	writeMu         sync.Mutex // Serializes all write operations for SQLite
 }
 
 // New creates a new Repository instance
 func New(dataSourceName string, mode DBMode) (*Repository, error) {
-	db, err := sql.Open("sqlite3", dataSourceName)
+	// Build DSN with parameters that apply to ALL connections in the pool
+	// This is critical - PRAGMA statements only affect a single connection,
+	// but DSN parameters are applied when each connection is created
+	dsnParams := []string{
+		"_journal_mode=WAL",
+		"_synchronous=NORMAL",
+		"_busy_timeout=30000",
+		"_cache_size=-64000",
+		"_txlock=immediate", // Acquire write lock at BEGIN, not at first write
+	}
+	if mode == ModeReadOnly {
+		dsnParams = append(dsnParams, "_query_only=true")
+	}
+
+	// Append parameters to DSN
+	separator := "?"
+	if strings.Contains(dataSourceName, "?") {
+		separator = "&"
+	}
+	fullDSN := dataSourceName + separator + strings.Join(dsnParams, "&")
+
+	db, err := sql.Open("sqlite3", fullDSN)
 	if err != nil {
 		return nil, fmt.Errorf("could not open database: %w", err)
 	}
@@ -46,34 +69,27 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 	}
 
 	// Configure connection pool based on mode
-	// For write mode: 4 contact processors + 2 profile processors + 1 ranking = 7 concurrent writers
-	// Set to 8 to ensure no connection starvation
 	if mode == ModeReadOnly {
 		db.SetMaxOpenConns(10)
 		db.SetMaxIdleConns(5)
 	} else {
-		db.SetMaxOpenConns(8)
-		db.SetMaxIdleConns(4)
+		// For write mode: use single connection to avoid lock contention
+		// SQLite only allows one writer at a time anyway
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 	}
 	db.SetConnMaxLifetime(time.Hour)
 
-	// Set additional PRAGMAs for better concurrency
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL;",
-		"PRAGMA synchronous = NORMAL;",
+	// These PRAGMAs don't have DSN equivalents, set on initial connection
+	// With MaxOpenConns=1 for write mode, this is sufficient
+	additionalPragmas := []string{
 		"PRAGMA temp_store = MEMORY;",
 		"PRAGMA mmap_size = 1073741824;",
-		"PRAGMA cache_size = -64000;",
 		"PRAGMA wal_autocheckpoint = 1000;",
 		"PRAGMA journal_size_limit = 104857600;",
-		"PRAGMA busy_timeout = 30000;",
 	}
 
-	if mode == ModeReadOnly {
-		pragmas = append(pragmas, "PRAGMA query_only = ON;")
-	}
-
-	for _, pragma := range pragmas {
+	for _, pragma := range additionalPragmas {
 		if _, err := db.Exec(pragma); err != nil {
 			log.Printf("Warning: failed to set pragma: %v", err)
 		}

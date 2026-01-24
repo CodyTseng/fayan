@@ -11,6 +11,10 @@ import (
 
 // UpsertPubkey adds a pubkey to the pubkeys table if it doesn't exist.
 func (r *Repository) UpsertPubkey(pubkey string) error {
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	now := time.Now().UTC()
 	query := `
 		INSERT INTO pubkeys (pubkey, created_at, updated_at)
@@ -23,6 +27,10 @@ func (r *Repository) UpsertPubkey(pubkey string) error {
 
 // UpdatePubkey updates the trustrank score, pagerank score, ranks, followers, and following for a given pubkey.
 func (r *Repository) UpdatePubkey(pubkey string, score float64, rank int, trustScore float64, pageScore float64, followers int, following int32) error {
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	now := time.Now().UTC()
 	query := `
 		UPDATE pubkeys
@@ -53,6 +61,10 @@ func (r *Repository) BatchUpdatePubkeys(updates []PubkeyUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
+
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 
 	tx, err := r.db.Begin()
 	if err != nil {
@@ -234,6 +246,10 @@ func (r *Repository) MarkPubkeysCrawled(pubkeys []string) error {
 	if len(pubkeys) == 0 {
 		return nil
 	}
+
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 
 	tx, err := r.db.Begin()
 	if err != nil {

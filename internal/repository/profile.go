@@ -11,6 +11,10 @@ import (
 // UpsertUserProfile adds or updates a user's profile information for search.
 // Uses a transaction to ensure DELETE + INSERT are atomic and reduce lock contention.
 func (r *Repository) UpsertUserProfile(pubkey, name, displayName, nip05, event string) error {
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	tx, err := r.db.Begin()
 	if err != nil {
 		return err

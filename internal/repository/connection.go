@@ -12,6 +12,10 @@ import (
 
 // UpsertConnection inserts or replaces a connection between two pubkeys.
 func (r *Repository) UpsertConnection(source, target string) error {
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	now := time.Now().UTC()
 	query := `
 		REPLACE INTO connections (source_pubkey, target_pubkey, last_seen)
@@ -36,6 +40,10 @@ func (r *Repository) BatchUpsertPubkeysAndConnections(pubkeys []string, connecti
 	if len(pubkeys) == 0 && len(connections) == 0 {
 		return nil
 	}
+
+	// Serialize write operations to avoid SQLite lock contention
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 
 	tx, err := r.db.Begin()
 	if err != nil {
