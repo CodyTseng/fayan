@@ -3,6 +3,10 @@ bin/
 fayan
 main
 
+# Config (copy from .example files)
+config.yaml
+docker-compose.yml
+
 # Database
 *.db
 *.db-shm

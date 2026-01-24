@@ -157,6 +157,9 @@ Search for users by name, display name, or NIP-05 identifier. Results are sorted
 ### Local Build & Run
 
 ```sh
+# Copy example config file
+cp config.example.yaml config.yaml
+
 # Build both crawler and API binaries
 go build -o fayan-crawler ./cmd/crawler/main.go
 go build -o fayan-api ./cmd/api/main.go
@@ -173,16 +176,19 @@ Default API port is 9090 (configurable in `config.yaml`).
 ### Docker Compose (Recommended)
 
 ```sh
+# Copy example config files
+cp config.example.yaml config.yaml
+cp docker-compose.example.yml docker-compose.yml
+
+# Start services
 docker compose up --build
 ```
 
 This will start both crawler and API services. API is mapped to local port 9090 by default.
 
-> Note: Recommend changing the volume paths in `docker-compose.yaml` for persistent data storage.
-
 ## Configuration
 
-The application is configured through the `config.yaml` file.
+Copy `config.example.yaml` to `config.yaml` and modify as needed. The example files are tracked by git while your local config files are ignored, making it easier to pull updates.
 
 ### Search Configuration
 

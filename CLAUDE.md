@@ -62,7 +62,7 @@ When enabled, the crawler also fetches and processes kind:0 (profile) events:
 6. Results ranked by: `bm25(relevance) * 0.3 + reputation_score * 0.7`
 
 ### Configuration
-All config is in `config.yaml`:
+Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to `docker-compose.yml` for Docker). Config options:
 - `relays`: Bootstrap relays for initial queries
 - `seed_pubkeys`: Trusted accounts for TrustRank algorithm
 - `pagerank_interval`: Minutes between score recalculations
