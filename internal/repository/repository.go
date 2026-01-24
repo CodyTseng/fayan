@@ -46,12 +46,14 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 	}
 
 	// Configure connection pool based on mode
+	// For write mode: 4 contact processors + 2 profile processors + 1 ranking = 7 concurrent writers
+	// Set to 8 to ensure no connection starvation
 	if mode == ModeReadOnly {
 		db.SetMaxOpenConns(10)
 		db.SetMaxIdleConns(5)
 	} else {
-		db.SetMaxOpenConns(4)
-		db.SetMaxIdleConns(2)
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(4)
 	}
 	db.SetConnMaxLifetime(time.Hour)
 

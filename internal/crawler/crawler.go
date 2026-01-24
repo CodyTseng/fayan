@@ -581,12 +581,17 @@ func (c *Crawler) isValidRelay(url string) bool {
 }
 
 // processKind3Event parses a kind:3 event and updates the database and work queue.
+// Uses batch writes to reduce lock contention.
 func (c *Crawler) processKind3Event(ev *nostr.Event) {
 	if ev.Kind != 3 {
 		return
 	}
 
-	c.repo.UpsertPubkey(ev.PubKey)
+	// Collect all pubkeys and connections for batch write
+	pubkeySet := make(map[string]bool)
+	pubkeySet[ev.PubKey] = true
+
+	var connections []repository.Connection
 
 	for _, tag := range ev.Tags {
 		if len(tag) >= 2 && tag[0] == "p" {
@@ -598,14 +603,31 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 				continue
 			}
 
-			c.repo.UpsertPubkey(targetPubkey)
-			c.repo.UpsertConnection(ev.PubKey, targetPubkey)
-
-			c.crawledMu.Lock()
-			c.crawled[targetPubkey] = true
-			c.crawledMu.Unlock()
+			pubkeySet[targetPubkey] = true
+			connections = append(connections, repository.Connection{
+				Source: ev.PubKey,
+				Target: targetPubkey,
+			})
 		}
 	}
+
+	// Convert set to slice
+	pubkeys := make([]string, 0, len(pubkeySet))
+	for pk := range pubkeySet {
+		pubkeys = append(pubkeys, pk)
+	}
+
+	// Batch write all pubkeys and connections in a single transaction
+	if err := c.repo.BatchUpsertPubkeysAndConnections(pubkeys, connections); err != nil {
+		log.Printf("[CRAWLER] Error batch upserting for %s: %v", ev.PubKey, err)
+	}
+
+	// Update crawled map
+	c.crawledMu.Lock()
+	for pk := range pubkeySet {
+		c.crawled[pk] = true
+	}
+	c.crawledMu.Unlock()
 }
 
 // profileProcessor handles processing of profile events (kind 0)

@@ -9,15 +9,25 @@ import (
 )
 
 // UpsertUserProfile adds or updates a user's profile information for search.
+// Uses a transaction to ensure DELETE + INSERT are atomic and reduce lock contention.
 func (r *Repository) UpsertUserProfile(pubkey, name, displayName, nip05, event string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	// FTS5 doesn't support UPSERT, so we delete first then insert
-	if _, err := r.db.Exec("DELETE FROM user_profiles WHERE pubkey = ?", pubkey); err != nil {
+	if _, err := tx.Exec("DELETE FROM user_profiles WHERE pubkey = ?", pubkey); err != nil {
 		return err
 	}
 
-	query := `INSERT INTO user_profiles (pubkey, name, display_name, nip05, event) VALUES (?, ?, ?, ?, ?);`
-	_, err := r.db.Exec(query, pubkey, name, displayName, nip05, event)
-	return err
+	if _, err := tx.Exec(`INSERT INTO user_profiles (pubkey, name, display_name, nip05, event) VALUES (?, ?, ?, ?, ?);`,
+		pubkey, name, displayName, nip05, event); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // SearchUsers searches for users by name, display_name or nip05 using FTS5.
