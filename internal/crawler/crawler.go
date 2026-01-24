@@ -37,12 +37,10 @@ type Crawler struct {
 	relays        []string
 	seedPubkeys   []string
 	searchConfig  *config.SearchConfig
-	contactsChan chan *nostr.Event
-	profilesChan chan *nostr.Event
+	contactsChan  chan *nostr.Event
+	profilesChan  chan *nostr.Event
 	crawled       map[string]bool
 	crawledMu     sync.Mutex
-	processed     map[string]time.Time
-	processedMu   sync.Mutex
 	relayLimiters map[string]*rate.Limiter
 	limitersMu    sync.Mutex
 
@@ -52,7 +50,7 @@ type Crawler struct {
 	sleepDuration    time.Duration
 
 	// Pause control using sync.Cond for safer synchronization
-	paused   bool
+	paused    bool
 	pauseCond *sync.Cond
 
 	// WaitGroup for tracking worker goroutines
@@ -81,7 +79,6 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 		contactsChan:     make(chan *nostr.Event, contactsChanSize),
 		profilesChan:     make(chan *nostr.Event, profilesChanSize),
 		crawled:          make(map[string]bool),
-		processed:        make(map[string]time.Time),
 		relayLimiters:    make(map[string]*rate.Limiter),
 		relayHealth:      NewRelayHealthTracker(),
 		consecutiveEmpty: 0,
@@ -238,36 +235,15 @@ func (c *Crawler) networkWorker() {
 			return
 		}
 
-		randomPubkeys, err := c.repo.RandomPubkeys(batchSize)
-		if err != nil || len(randomPubkeys) == 0 {
+		pubkeys, err := c.repo.OldestPubkeys(batchSize)
+		if err != nil || len(pubkeys) == 0 {
 			c.fetchBatch(c.seedPubkeys)
 		} else {
-			pubkeys := make([]string, 0, len(randomPubkeys))
-			for _, pk := range randomPubkeys {
-				c.processedMu.Lock()
-				lastProcessedTime, alreadyProcessed := c.processed[pk]
-				c.processedMu.Unlock()
-				if !alreadyProcessed || time.Since(lastProcessedTime) > time.Hour {
-					pubkeys = append(pubkeys, pk)
-				}
-			}
-			if len(pubkeys) == 0 {
-				// No pubkeys to crawl, sleep and increase wait time exponentially
-				c.consecutiveEmpty++
-				sleepTime := min(c.sleepDuration*time.Duration(1<<(c.consecutiveEmpty-1)), time.Hour) // 1h (capped)
-				log.Printf("[INFO] No new pubkeys to crawl (attempt %d). Sleeping for %v...", c.consecutiveEmpty, sleepTime)
-
-				// Interruptible sleep
-				select {
-				case <-time.After(sleepTime):
-				case <-c.ctx.Done():
-					return
-				}
-				continue
-			}
-			// Reset consecutive empty counter when we find pubkeys
-			c.consecutiveEmpty = 0
 			c.fetchBatch(pubkeys)
+			// Mark these pubkeys as crawled
+			if err := c.repo.MarkPubkeysCrawled(pubkeys); err != nil {
+				log.Printf("[CRAWLER] Error marking pubkeys as crawled: %v", err)
+			}
 		}
 	}
 }
@@ -612,11 +588,6 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 
 	c.repo.UpsertPubkey(ev.PubKey)
 
-	c.processedMu.Lock()
-	c.processed[ev.PubKey] = time.Now()
-	c.processedMu.Unlock()
-
-	targetCount := 0
 	for _, tag := range ev.Tags {
 		if len(tag) >= 2 && tag[0] == "p" {
 			targetPubkey := tag[1]
@@ -629,8 +600,6 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 
 			c.repo.UpsertPubkey(targetPubkey)
 			c.repo.UpsertConnection(ev.PubKey, targetPubkey)
-
-			targetCount++
 
 			c.crawledMu.Lock()
 			c.crawled[targetPubkey] = true
@@ -740,10 +709,6 @@ func (c *Crawler) statusReporter() {
 	for {
 		select {
 		case <-ticker.C:
-			c.processedMu.Lock()
-			processedCount := len(c.processed)
-			c.processedMu.Unlock()
-
 			c.crawledMu.Lock()
 			crawledCount := len(c.crawled)
 			c.crawledMu.Unlock()
@@ -752,11 +717,11 @@ func (c *Crawler) statusReporter() {
 			connectedRelayCount := c.poolManager.GetConnectedRelayCount()
 
 			if totalFailed > 0 {
-				log.Printf("[STATUS] Crawled: %d | Processed: %d | Connected relays: %d | Failed relays: %d (%d banned)",
-					crawledCount, processedCount, connectedRelayCount, totalFailed, banned)
+				log.Printf("[STATUS] Crawled: %d | Connected relays: %d | Failed relays: %d (%d banned)",
+					crawledCount, connectedRelayCount, totalFailed, banned)
 			} else {
-				log.Printf("[STATUS] Crawled: %d | Processed: %d | Connected relays: %d",
-					crawledCount, processedCount, connectedRelayCount)
+				log.Printf("[STATUS] Crawled: %d | Connected relays: %d",
+					crawledCount, connectedRelayCount)
 			}
 		case <-c.ctx.Done():
 			return

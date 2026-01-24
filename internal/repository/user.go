@@ -3,7 +3,6 @@ package repository
 import (
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -199,27 +198,61 @@ func (r *Repository) GetTotalUsersCached() (int, error) {
 	return count, nil
 }
 
-// RandomPubkeys retrieves a random sample of pubkeys from the database.
-func (r *Repository) RandomPubkeys(limit int) ([]string, error) {
-	var count int64
-	err := r.db.QueryRow("SELECT COUNT(1) FROM pubkeys;").Scan(&count)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count pubkeys: %w", err)
-	}
+// OldestPubkeys retrieves pubkeys ordered by last_crawled_at ascending (NULL first).
+// This prioritizes users who have never been crawled or were crawled longest ago.
+func (r *Repository) OldestPubkeys(limit int) ([]string, error) {
+	query := `
+		SELECT pubkey FROM pubkeys
+		ORDER BY last_crawled_at IS NOT NULL, last_crawled_at ASC
+		LIMIT ?;
+	`
 
-	if count == 0 {
-		return []string{}, nil
+	rows, err := r.db.Query(query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query oldest pubkeys: %w", err)
 	}
+	defer rows.Close()
 
 	var pubkeys []string
-	for len(pubkeys) < limit {
-		offset := rand.Int63n(count)
+	for rows.Next() {
 		var pubkey string
-		err := r.db.QueryRow("SELECT pubkey FROM pubkeys LIMIT 1 OFFSET ?;", offset).Scan(&pubkey)
-		if err == nil {
-			pubkeys = append(pubkeys, pubkey)
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, fmt.Errorf("failed to scan pubkey: %w", err)
 		}
+		pubkeys = append(pubkeys, pubkey)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating pubkey rows: %w", err)
 	}
 
 	return pubkeys, nil
+}
+
+// MarkPubkeysCrawled updates the last_crawled_at timestamp for the given pubkeys.
+func (r *Repository) MarkPubkeysCrawled(pubkeys []string) error {
+	if len(pubkeys) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("UPDATE pubkeys SET last_crawled_at = ? WHERE pubkey = ?;")
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for _, pubkey := range pubkeys {
+		if _, err := stmt.Exec(now, pubkey); err != nil {
+			return fmt.Errorf("failed to update last_crawled_at for %s: %w", pubkey, err)
+		}
+	}
+
+	return tx.Commit()
 }

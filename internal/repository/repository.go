@@ -77,19 +77,21 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 		}
 	}
 
-	// Only create tables in read-write mode
-	if mode == ModeReadWrite {
-		if err := createTables(db); err != nil {
-			return nil, fmt.Errorf("could not create tables: %w", err)
-		}
-	}
-
-	return &Repository{
+	repo := &Repository{
 		db: db,
 		totalUsersCache: &totalUsersCache{
 			ttl: 5 * time.Minute,
 		},
-	}, nil
+	}
+
+	// Run migrations in read-write mode
+	if mode == ModeReadWrite {
+		if err := repo.RunMigrations(); err != nil {
+			return nil, fmt.Errorf("could not run migrations: %w", err)
+		}
+	}
+
+	return repo, nil
 }
 
 // DB returns the underlying database connection (for backward compatibility)
@@ -122,61 +124,3 @@ func (r *Repository) BeginTransaction() (*sql.Tx, error) {
 	return r.db.Begin()
 }
 
-// createTables defines and executes the SQL statements to create the necessary tables.
-func createTables(db *sql.DB) error {
-	pubkeysTable := `
-	CREATE TABLE IF NOT EXISTS pubkeys (
-		pubkey TEXT PRIMARY KEY,
-		score REAL DEFAULT 0.0,
-		rank INTEGER,
-		trust_score REAL DEFAULT 0.0, 
-		page_score REAL DEFAULT 0.0, 
-		followers INTEGER DEFAULT 0,
-		following INTEGER DEFAULT 0,
-		created_at TIMESTAMP NOT NULL,
-		updated_at TIMESTAMP NOT NULL
-	);`
-
-	connectionsTable := `
-	CREATE TABLE IF NOT EXISTS connections (
-		source_pubkey TEXT NOT NULL,
-		target_pubkey TEXT NOT NULL,
-		last_seen TIMESTAMP NOT NULL,
-		PRIMARY KEY(source_pubkey, target_pubkey)
-	);`
-
-	// User profiles FTS5 table for full-text search
-	// Uses trigram tokenizer for CJK (Chinese, Japanese, Korean) support
-	userProfilesTable := `
-	CREATE VIRTUAL TABLE IF NOT EXISTS user_profiles USING fts5(
-		pubkey UNINDEXED,
-		name,
-		display_name,
-		nip05,
-		event UNINDEXED,
-		tokenize='trigram'
-	);`
-
-	if _, err := db.Exec(pubkeysTable); err != nil {
-		return err
-	}
-
-	if _, err := db.Exec(connectionsTable); err != nil {
-		return err
-	}
-
-	if _, err := db.Exec(userProfilesTable); err != nil {
-		return err
-	}
-
-	// Create indexes for faster queries
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_connections_target ON connections(target_pubkey);"); err != nil {
-		return err
-	}
-
-	// Add columns if they don't exist (for existing databases)
-	db.Exec("ALTER TABLE pubkeys ADD COLUMN trust_score REAL DEFAULT 0.0;")
-	db.Exec("ALTER TABLE pubkeys ADD COLUMN page_score REAL DEFAULT 0.0;")
-
-	return nil
-}
