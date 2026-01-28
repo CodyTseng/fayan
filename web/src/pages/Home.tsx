@@ -13,8 +13,11 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const queryRef = useRef('')
+  const searchIdRef = useRef(0)
 
   const handleSearch = useCallback(async (query: string) => {
+    const currentSearchId = ++searchIdRef.current
+
     if (!query) {
       setUsers([])
       setError(null)
@@ -35,12 +38,14 @@ export default function Home() {
 
       if (isPubkeyLike) {
         const user = await getUser(query)
+        if (currentSearchId !== searchIdRef.current) return
         setUsers(user ? [user] : [])
         if (!user) {
           setError('User not found')
         }
       } else {
         const result = await searchUsers(query, PAGE_SIZE, 0)
+        if (currentSearchId !== searchIdRef.current) return
         setUsers(result)
         setHasMore(result.length === PAGE_SIZE)
         if (result.length === 0) {
@@ -48,10 +53,13 @@ export default function Home() {
         }
       }
     } catch (err) {
+      if (currentSearchId !== searchIdRef.current) return
       setError(err instanceof Error ? err.message : 'Search failed, please try again')
       setUsers([])
     } finally {
-      setIsLoading(false)
+      if (currentSearchId === searchIdRef.current) {
+        setIsLoading(false)
+      }
     }
   }, [])
 
