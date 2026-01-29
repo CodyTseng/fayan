@@ -1,85 +1,22 @@
+import { bareNostrUser, nostrUserFromEvent } from "@nostr/gadgets/metadata";
+import { NostrEvent } from "nostr-tools";
+import { npubEncode } from "nostr-tools/nip19";
+
 const API_BASE = "https://fayan.jumble.social";
 
-// Bech32 encoding for npub
-const ALPHABET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-
-function bech32Encode(prefix: string, data: Uint8Array): string {
-  const values = convertBits(data, 8, 5, true);
-  const checksum = createChecksum(prefix, values);
-  return (
-    prefix + "1" + [...values, ...checksum].map((v) => ALPHABET[v]).join("")
-  );
-}
-
-function convertBits(
-  data: Uint8Array,
-  fromBits: number,
-  toBits: number,
-  pad: boolean,
-): number[] {
-  let acc = 0;
-  let bits = 0;
-  const result: number[] = [];
-  const maxv = (1 << toBits) - 1;
-  for (const value of data) {
-    acc = (acc << fromBits) | value;
-    bits += fromBits;
-    while (bits >= toBits) {
-      bits -= toBits;
-      result.push((acc >> bits) & maxv);
-    }
-  }
-  if (pad && bits > 0) {
-    result.push((acc << (toBits - bits)) & maxv);
-  }
-  return result;
-}
-
-function createChecksum(prefix: string, values: number[]): number[] {
-  const enc = [...prefixExpand(prefix), ...values, 0, 0, 0, 0, 0, 0];
-  const mod = polymod(enc) ^ 1;
-  return [0, 1, 2, 3, 4, 5].map((i) => (mod >> (5 * (5 - i))) & 31);
-}
-
-function prefixExpand(prefix: string): number[] {
-  const result: number[] = [];
-  for (const c of prefix) {
-    result.push(c.charCodeAt(0) >> 5);
-  }
-  result.push(0);
-  for (const c of prefix) {
-    result.push(c.charCodeAt(0) & 31);
-  }
-  return result;
-}
-
-function polymod(values: number[]): number {
-  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-  let chk = 1;
-  for (const v of values) {
-    const top = chk >> 25;
-    chk = ((chk & 0x1ffffff) << 5) ^ v;
-    for (let i = 0; i < 5; i++) {
-      if ((top >> i) & 1) chk ^= GEN[i];
-    }
-  }
-  return chk;
-}
-
 export function pubkeyToNpub(pubkey: string): string {
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    bytes[i] = parseInt(pubkey.slice(i * 2, i * 2 + 2), 16);
+  if (pubkey.startsWith("npub1")) {
+    return pubkey;
   }
-  return bech32Encode("npub", bytes);
+  return npubEncode(pubkey);
 }
 
 export interface User {
   pubkey: string;
-  npub?: string;
-  name?: string;
-  displayName?: string;
-  picture?: string;
+  npub: string;
+  profileEvent?: NostrEvent;
+  name: string;
+  avatar?: string;
   nip05?: string;
   about?: string;
   rank?: number;
@@ -89,13 +26,7 @@ export interface User {
 }
 
 interface ApiUserResponse {
-  event?: {
-    kind: number;
-    id: string;
-    pubkey: string;
-    created_at: number;
-    content: string;
-  };
+  event?: NostrEvent;
   pubkey: string;
   rank?: number;
   percentile?: number;
@@ -104,24 +35,20 @@ interface ApiUserResponse {
 }
 
 function parseUserResponse(data: ApiUserResponse): User {
-  let profile: Record<string, unknown> = {};
-  if (data.event?.content) {
-    try {
-      profile = JSON.parse(data.event.content);
-    } catch {
-      // ignore parse error
-    }
-  }
+  const profileEvent =
+    data.event && data.event.kind === 0 ? data.event : undefined;
+  const profile = profileEvent
+    ? nostrUserFromEvent(profileEvent)
+    : bareNostrUser(data.pubkey);
 
   return {
     pubkey: data.pubkey,
-    name: profile.name as string | undefined,
-    displayName: (profile.display_name || profile.displayName) as
-      | string
-      | undefined,
-    picture: profile.picture as string | undefined,
-    nip05: profile.nip05 as string | undefined,
-    about: profile.about as string | undefined,
+    npub: pubkeyToNpub(data.pubkey),
+    profileEvent,
+    name: profile.shortName,
+    avatar: profile.image,
+    nip05: profile.metadata.nip05,
+    about: profile.metadata.about,
     rank: data.rank,
     percentile: data.percentile,
     followersCount: data.followers,

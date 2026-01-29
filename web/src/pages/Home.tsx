@@ -40,17 +40,11 @@ export default function Home() {
         const user = await getUser(query)
         if (currentSearchId !== searchIdRef.current) return
         setUsers(user ? [user] : [])
-        if (!user) {
-          setError('User not found')
-        }
       } else {
         const result = await searchUsers(query, PAGE_SIZE, 0)
         if (currentSearchId !== searchIdRef.current) return
         setUsers(result)
         setHasMore(result.length === PAGE_SIZE)
-        if (result.length === 0) {
-          setError('No matching users found')
-        }
       }
     } catch (err) {
       if (currentSearchId !== searchIdRef.current) return
@@ -124,8 +118,8 @@ export default function Home() {
 
       {/* Empty State */}
       {hasSearched && !isLoading && users.length === 0 && !error && (
-        <div className="text-center py-12 text-gray-400">
-          No results found
+        <div className="text-center py-12 text-gray-500">
+          No matching users in our database
         </div>
       )}
 
@@ -136,7 +130,7 @@ export default function Home() {
             <div>
               <h3 className="font-medium text-gray-900 mb-1">Reputation Ranking</h3>
               <p className="text-gray-500">
-                PageRank-based influence scoring for Nostr users.
+                TrustRank + PageRank based scoring for Nostr users.
               </p>
             </div>
             <div>

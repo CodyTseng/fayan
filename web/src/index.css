@@ -11,3 +11,9 @@ body {
     'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
     'Noto Color Emoji';
 }
+
+
+body,
+html {
+  overscroll-behavior-y: none;
+}
