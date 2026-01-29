@@ -17,6 +17,13 @@ search:
   # Lower values mean stricter filtering, reducing database size
   top_percentile: 90
 
+# Ranking weight configuration
+ranking:
+  # Weight for TrustRank score (default: 0.7)
+  trustrank_weight: 0.7
+  # Weight for PageRank score (default: 0.3)
+  pagerank_weight: 0.3
+
 # Default nostr relays to connect to, used for searching uesrs' relay lists
 relays:
   - wss://relay.damus.io/

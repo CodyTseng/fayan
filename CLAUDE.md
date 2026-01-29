@@ -40,7 +40,7 @@ The repository supports two modes via `repository.New(path, mode)`:
   - `pool_manager.go`: Manages Nostr relay WebSocket connections
   - `relay_health.go`: Tracks relay failures, bans unreliable relays
 - `internal/ranking/`: PageRank and TrustRank algorithms
-  - Combines scores: `0.7*trustScore + 0.3*pageScore`
+  - Combines scores: `trustrank_weight*trustScore + pagerank_weight*pageScore` (configurable)
   - Uses seed pubkeys from config as trust anchors for TrustRank
 - `internal/repository/`: SQLite storage layer with FTS5 for user search
 - `internal/api/handler/`: HTTP handlers for `/users`, `/search` endpoints
@@ -67,3 +67,5 @@ Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to
 - `seed_pubkeys`: Trusted accounts for TrustRank algorithm
 - `pagerank_interval`: Minutes between score recalculations
 - `search.enabled`: Toggle user search feature (requires FTS5)
+- `ranking.trustrank_weight`: Weight for TrustRank score (default: 0.7)
+- `ranking.pagerank_weight`: Weight for PageRank score (default: 0.3)

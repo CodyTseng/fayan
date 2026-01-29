@@ -17,15 +17,19 @@ type scoreWithID struct {
 
 // Calculator handles PageRank and TrustRank calculations
 type Calculator struct {
-	repo        *repository.Repository
-	seedPubkeys []string
+	repo            *repository.Repository
+	seedPubkeys     []string
+	trustRankWeight float64
+	pageRankWeight  float64
 }
 
 // NewCalculator creates a new Calculator instance
-func NewCalculator(repo *repository.Repository, seedPubkeys []string) *Calculator {
+func NewCalculator(repo *repository.Repository, seedPubkeys []string, trustRankWeight, pageRankWeight float64) *Calculator {
 	return &Calculator{
-		repo:        repo,
-		seedPubkeys: seedPubkeys,
+		repo:            repo,
+		seedPubkeys:     seedPubkeys,
+		trustRankWeight: trustRankWeight,
+		pageRankWeight:  pageRankWeight,
 	}
 }
 
@@ -119,7 +123,7 @@ func (c *Calculator) Calculate() error {
 	// Calculate combined scores
 	scores := make([]float64, numNodes)
 	for i := range numNodes {
-		scores[i] = 0.7*trustScores[i] + 0.3*pageScores[i]
+		scores[i] = c.trustRankWeight*trustScores[i] + c.pageRankWeight*pageScores[i]
 	}
 
 	// Calculate ranks based on scores
