@@ -242,7 +242,7 @@ func (c *Calculator) runTrustRank(numNodes int, inLinks [][]int32, outDegree []i
 		scores[seedID] = seedScore
 	}
 
-	for iter := 0; iter < maxIterations; iter++ {
+	for iter := range maxIterations {
 		danglingSum := 0.0
 		for i := range numNodes {
 			if outDegree[i] == 0 {
@@ -256,12 +256,12 @@ func (c *Calculator) runTrustRank(numNodes int, inLinks [][]int32, outDegree []i
 				sum += scores[j] / float64(outDegree[j])
 			}
 
-			teleport := 0.0
+			// In TrustRank, dangling node scores only flow back to seed nodes
 			if seedSet[int32(i)] {
-				teleport = seedScore
+				newScores[i] = (1-damping)*seedScore + damping*(sum+danglingSum*seedScore)
+			} else {
+				newScores[i] = damping * sum
 			}
-
-			newScores[i] = (1-damping)*teleport + damping*(sum+danglingSum*seedScore)
 		}
 
 		diff := 0.0
