@@ -85,6 +85,16 @@ var migrations = []Migration{
 			return nil
 		},
 	},
+	{
+		Version: 3,
+		Name:    "add_connections_last_seen_index",
+		Up: func(db *sql.DB) error {
+			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_connections_last_seen ON connections(last_seen);"); err != nil {
+				return fmt.Errorf("failed to create idx_connections_last_seen: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // RunMigrations executes all pending database migrations
