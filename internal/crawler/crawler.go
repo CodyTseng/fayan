@@ -17,18 +17,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const (
-	batchSize = 200
-	reqRate   = 2 * time.Second
-
-	// Processor counts
-	numContactProcessors = 4
-	numProfileProcessors = 2
-
-	// Channel buffer sizes (based on batchSize)
-	contactsChanSize = batchSize * 3                        // ~3 batches buffer
-	profilesChanSize = batchSize * numProfileProcessors * 2 // larger buffer for slower processing
-)
+// CrawlerConfig holds the crawler configuration parameters
+type CrawlerConfig struct {
+	BatchSize            int
+	RequestInterval      time.Duration
+	NumContactProcessors int
+	NumProfileProcessors int
+}
 
 // Crawler manages the recursive crawling of the Nostr network.
 type Crawler struct {
@@ -37,6 +32,7 @@ type Crawler struct {
 	relays        []string
 	seedPubkeys   []string
 	searchConfig  *config.SearchConfig
+	crawlerConfig *CrawlerConfig
 	contactsChan  chan *nostr.Event
 	profilesChan  chan *nostr.Event
 	crawled       map[string]bool
@@ -61,7 +57,7 @@ type Crawler struct {
 }
 
 // NewCrawler creates a new Crawler instance.
-func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig) *Crawler {
+func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig, crawlerConfig *CrawlerConfig) *Crawler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	relayOptions := []nostr.RelayOption{
@@ -70,12 +66,17 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 
 	poolManager := NewPoolManager(ctx, relayOptions...)
 
+	// Calculate channel buffer sizes based on batch size
+	contactsChanSize := crawlerConfig.BatchSize * 3
+	profilesChanSize := crawlerConfig.BatchSize * crawlerConfig.NumProfileProcessors * 2
+
 	c := &Crawler{
 		repo:             repo,
 		poolManager:      poolManager,
 		relays:           relays,
 		seedPubkeys:      seedPubkeys,
 		searchConfig:     searchConfig,
+		crawlerConfig:    crawlerConfig,
 		contactsChan:     make(chan *nostr.Event, contactsChanSize),
 		profilesChan:     make(chan *nostr.Event, profilesChanSize),
 		crawled:          make(map[string]bool),
@@ -183,7 +184,7 @@ func (c *Crawler) getRelayLimiter(relay string) *rate.Limiter {
 		return limiter
 	}
 
-	limiter := rate.NewLimiter(rate.Every(reqRate), 1)
+	limiter := rate.NewLimiter(rate.Every(c.crawlerConfig.RequestInterval), 1)
 	c.relayLimiters[relay] = limiter
 	return limiter
 }
@@ -198,7 +199,7 @@ func (c *Crawler) Start() {
 	}()
 
 	// Multiple goroutines for processing contact events
-	for range numContactProcessors {
+	for range c.crawlerConfig.NumContactProcessors {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
@@ -208,7 +209,7 @@ func (c *Crawler) Start() {
 
 	// Multiple goroutines for processing profile events (search functionality)
 	if c.searchConfig != nil && c.searchConfig.Enabled {
-		for range numProfileProcessors {
+		for range c.crawlerConfig.NumProfileProcessors {
 			c.wg.Add(1)
 			go func() {
 				defer c.wg.Done()
@@ -235,7 +236,7 @@ func (c *Crawler) networkWorker() {
 			return
 		}
 
-		pubkeys, err := c.repo.OldestPubkeys(batchSize)
+		pubkeys, err := c.repo.OldestPubkeys(c.crawlerConfig.BatchSize)
 		if err != nil || len(pubkeys) == 0 {
 			c.fetchBatch(c.seedPubkeys)
 		} else {

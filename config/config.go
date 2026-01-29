@@ -20,6 +20,14 @@ type RankingConfig struct {
 	PageRankWeight  float64 `yaml:"pagerank_weight"`  // Weight for PageRank score (default: 0.3)
 }
 
+// CrawlerConfig represents the crawler performance configuration
+type CrawlerConfig struct {
+	BatchSize            int `yaml:"batch_size"`             // Pubkeys per batch (default: 500)
+	RequestIntervalMs    int `yaml:"request_interval_ms"`    // Milliseconds between requests per relay (default: 500)
+	NumContactProcessors int `yaml:"num_contact_processors"` // Number of contact event processors (default: 4)
+	NumProfileProcessors int `yaml:"num_profile_processors"` // Number of profile event processors (default: 4)
+}
+
 // Config represents the application configuration
 type Config struct {
 	Relays           []string      `yaml:"relays"`
@@ -29,6 +37,7 @@ type Config struct {
 	Port             string        `yaml:"port"`
 	Search           SearchConfig  `yaml:"search"`
 	Ranking          RankingConfig `yaml:"ranking"`
+	Crawler          CrawlerConfig `yaml:"crawler"`
 }
 
 // Load reads and parses the configuration file
@@ -47,6 +56,12 @@ func Load(path string) (*Config, error) {
 			TrustRankWeight: 0.7,
 			PageRankWeight:  0.3,
 		},
+		Crawler: CrawlerConfig{
+			BatchSize:            500,
+			RequestIntervalMs:    500,
+			NumContactProcessors: 4,
+			NumProfileProcessors: 4,
+		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
@@ -63,6 +78,8 @@ func Load(path string) (*Config, error) {
 		log.Printf("[CONFIG] - Search top percentile: %d%%", cfg.Search.TopPercentile)
 	}
 	log.Printf("[CONFIG] - Ranking weights: TrustRank=%.2f, PageRank=%.2f", cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
+	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
+		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
 
 	return &cfg, nil
 }

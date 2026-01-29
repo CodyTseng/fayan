@@ -26,15 +26,19 @@ docker compose up --build
 ## Architecture
 
 ### Two-Binary System
+
 - **Crawler** (`cmd/crawler/main.go`): Crawls the Nostr network, stores follow relationships in SQLite, periodically calculates PageRank/TrustRank scores
 - **API** (`cmd/api/main.go`): Read-only HTTP server that queries reputation data
 
 ### Database Access Modes
+
 The repository supports two modes via `repository.New(path, mode)`:
+
 - `ModeReadWrite`: For crawler - writes connections and scores
 - `ModeReadOnly`: For API - optimized for concurrent reads with `PRAGMA query_only = ON`
 
 ### Key Packages
+
 - `internal/crawler/`: Network crawler using go-nostr library
   - `crawler.go`: Main crawl loop with pause/resume support, processes kind:3 (contacts) and kind:0 (profiles) events
   - `pool_manager.go`: Manages Nostr relay WebSocket connections
@@ -46,6 +50,7 @@ The repository supports two modes via `repository.New(path, mode)`:
 - `internal/api/handler/`: HTTP handlers for `/users`, `/search` endpoints
 
 ### Crawl Flow
+
 1. Fetch kind:10002 (relay list) events from bootstrap relays
 2. Calculate target relays for each pubkey (user's write relays + fallbacks)
 3. Fetch kind:3 (contacts) and optionally kind:0 (profiles) from target relays
@@ -53,7 +58,9 @@ The repository supports two modes via `repository.New(path, mode)`:
 5. Periodically run PageRank/TrustRank calculations
 
 ### Search Feature (when `search.enabled: true`)
+
 When enabled, the crawler also fetches and processes kind:0 (profile) events:
+
 1. `profileProcessor` goroutines receive kind:0 events from `profilesChan`
 2. `processKind0Event` parses metadata (name, display_name, nip05) via go-nostr SDK
 3. Checks if user is in top percentile (`search.top_percentile`) before storing
@@ -62,10 +69,16 @@ When enabled, the crawler also fetches and processes kind:0 (profile) events:
 6. Results ranked by: `bm25(relevance) * 0.3 + reputation_score * 0.7`
 
 ### Configuration
+
 Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to `docker-compose.yml` for Docker). Config options:
+
 - `relays`: Bootstrap relays for initial queries
 - `seed_pubkeys`: Trusted accounts for TrustRank algorithm
 - `pagerank_interval`: Minutes between score recalculations
 - `search.enabled`: Toggle user search feature (requires FTS5)
 - `ranking.trustrank_weight`: Weight for TrustRank score (default: 0.7)
 - `ranking.pagerank_weight`: Weight for PageRank score (default: 0.3)
+- `crawler.batch_size`: Pubkeys per batch (default: 500)
+- `crawler.request_interval_ms`: Milliseconds between requests per relay (default: 500)
+- `crawler.num_contact_processors`: Number of contact event processors (default: 4)
+- `crawler.num_profile_processors`: Number of profile event processors (default: 4)

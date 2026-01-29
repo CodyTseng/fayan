@@ -24,6 +24,18 @@ ranking:
   # Weight for PageRank score (default: 0.3)
   pagerank_weight: 0.3
 
+# Crawler performance configuration
+crawler:
+  # Pubkeys per batch (default: 500)
+  batch_size: 500
+  # Milliseconds between requests per relay (default: 500)
+  # Lower values = faster but may get rate limited by relays
+  request_interval_ms: 500
+  # Number of contact event processors (default: 4)
+  num_contact_processors: 4
+  # Number of profile event processors (default: 4)
+  num_profile_processors: 4
+
 # Default nostr relays to connect to, used for searching uesrs' relay lists
 relays:
   - wss://relay.damus.io/
