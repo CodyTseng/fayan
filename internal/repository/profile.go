@@ -63,7 +63,7 @@ func (r *Repository) SearchUsers(query string, limit int, offset int) ([]*models
 			FROM user_profiles up
 			JOIN pubkeys p ON up.pubkey = p.pubkey
 			WHERE up.name LIKE ? OR up.display_name LIKE ? OR up.nip05 LIKE ?
-			ORDER BY p.score DESC
+			ORDER BY p.rank ASC
 			LIMIT ?
 			OFFSET ?;
 		`
@@ -82,7 +82,7 @@ func (r *Repository) SearchUsers(query string, limit int, offset int) ([]*models
 			FROM user_profiles up
 			JOIN pubkeys p ON up.pubkey = p.pubkey
 			WHERE user_profiles MATCH ?
-			ORDER BY (bm25(user_profiles) * 0.3 + p.score * 0.7) DESC, p.score DESC
+			ORDER BY (bm25(user_profiles) * 0.3 + COALESCE(1.0 / p.rank, 0) * 0.7) DESC, p.rank ASC
 			LIMIT ?
 			OFFSET ?;
 		`
