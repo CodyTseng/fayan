@@ -107,7 +107,7 @@ All endpoints return the following format on error:
 
 **GET** `/search?q={query}&limit={limit}`
 
-Search for users by name, display name, or NIP-05 identifier. Results are sorted by a combination of relevance and reputation score.
+Search for users by name, display name, or NIP-05 identifier. Results are sorted by reputation rank.
 
 > **Note:** This feature is disabled by default. Enable it in `config.yaml` by setting `search.enabled: true`.
 

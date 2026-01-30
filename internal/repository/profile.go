@@ -35,7 +35,7 @@ func (r *Repository) UpsertUserProfile(pubkey, name, displayName, nip05, event s
 }
 
 // SearchUsers searches for users by name, display_name or nip05 using FTS5.
-// Results are sorted by a combination of relevance and reputation score.
+// Results are sorted by rank (lower rank = higher reputation).
 // limit specifies the maximum number of results to return.
 // offset specifies the number of results to skip (for pagination).
 func (r *Repository) SearchUsers(query string, limit int, offset int) ([]*models.UserProfile, error) {
@@ -82,7 +82,7 @@ func (r *Repository) SearchUsers(query string, limit int, offset int) ([]*models
 			FROM user_profiles up
 			JOIN pubkeys p ON up.pubkey = p.pubkey
 			WHERE user_profiles MATCH ?
-			ORDER BY ((1.0 / (bm25(user_profiles) + 2.0)) * 0.2 + COALESCE(1.0 / p.rank, 0) * 0.8) DESC, p.rank ASC
+			ORDER BY p.rank ASC
 			LIMIT ?
 			OFFSET ?;
 		`
