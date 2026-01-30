@@ -1,7 +1,13 @@
 # Binaries
 bin/
 fayan
+fayan-api
+fayan-crawler
 main
+
+# Embedded static files (built from web/)
+cmd/api/static/*
+!cmd/api/static/.gitkeep
 
 # Config (copy from .example files)
 config.yaml

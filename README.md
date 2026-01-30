@@ -21,7 +21,7 @@ A TrustRank & PageRank based reputation system for Nostr.
 | POST   | `/users`                | Batch query users    |
 | GET    | `/search?q=...`         | Search users by name |
 
-> Offical server: `https://fayan.jumble.social/`
+> Official server: `https://fayan.jumble.social/`
 
 ### Query Single User
 
@@ -154,25 +154,6 @@ Search for users by name, display name, or NIP-05 identifier. Results are sorted
 
 ## How to Run
 
-### Local Build & Run
-
-```sh
-# Copy example config file
-cp config.example.yaml config.yaml
-
-# Build both crawler and API binaries
-go build -o fayan-crawler ./cmd/crawler/main.go
-go build -o fayan-api ./cmd/api/main.go
-
-# Run crawler
-./fayan-crawler
-
-# Run API server in another terminal
-./fayan-api
-```
-
-Default API port is 9090 (configurable in `config.yaml`).
-
 ### Docker Compose (Recommended)
 
 ```sh
@@ -184,7 +165,56 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up --build
 ```
 
-This will start both crawler and API services. API is mapped to local port 9090 by default.
+This will build the frontend, embed it into the API binary, and start both crawler and API services. The web UI and API are available at `http://localhost:9090`.
+
+### Local Build & Run
+
+**Prerequisites:**
+
+- Go 1.24+
+- Node.js 20+ (for frontend)
+
+**Option 1: Using build script**
+
+```sh
+# Copy example config file
+cp config.example.yaml config.yaml
+
+# Build everything (frontend + Go binaries)
+./build.sh
+
+# Run crawler
+./fayan-crawler
+
+# Run API server in another terminal
+./fayan-api
+```
+
+**Option 2: Manual build**
+
+```sh
+# Copy example config file
+cp config.example.yaml config.yaml
+
+# Build frontend
+cd web
+npm install
+npm run build
+cd ..
+
+# Copy frontend assets to embed directory
+cp -r web/dist/* cmd/api/static/
+
+# Build Go binaries
+go build -o fayan-crawler ./cmd/crawler/main.go
+go build -o fayan-api ./cmd/api/main.go
+
+# Run crawler
+./fayan-crawler
+
+# Run API server in another terminal
+./fayan-api
+```
 
 ## Configuration
 
@@ -201,6 +231,27 @@ search:
 ```
 
 The `top_percentile` setting controls which users' profiles are stored in the search index. Lower values mean stricter filtering, which reduces database size but may exclude more users from search results.
+
+## Project Structure
+
+```
+fayan/
+├── cmd/
+│   ├── api/           # API server with embedded frontend
+│   │   ├── main.go
+│   │   └── static/    # Embedded frontend files (built from web/)
+│   └── crawler/       # Network crawler
+├── internal/
+│   ├── api/           # API handlers and middleware
+│   ├── cache/         # In-memory caching
+│   ├── crawler/       # Crawler logic
+│   ├── ranking/       # PageRank/TrustRank algorithms
+│   └── repository/    # SQLite storage layer
+├── web/               # React frontend source
+├── build.sh           # Build script for frontend + Go binaries
+├── Dockerfile         # Multi-stage Docker build
+└── docker-compose.example.yml
+```
 
 ## License
 

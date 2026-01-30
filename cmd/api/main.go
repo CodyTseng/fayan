@@ -1,8 +1,13 @@
 package main
 
 import (
+	"embed"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"fayan/config"
@@ -11,6 +16,9 @@ import (
 	"fayan/internal/cache"
 	"fayan/internal/repository"
 )
+
+//go:embed static/*
+var staticFiles embed.FS
 
 func main() {
 	// Load configuration
@@ -34,12 +42,88 @@ func main() {
 	// Initialize handler with search config
 	h := handler.New(repo, apiCache, &cfg.Search)
 
+	// Setup static file system
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Printf("[API] Warning: Failed to load static files: %v", err)
+	}
+
+	// serveStaticFile tries to serve a static file, returns true if successful
+	serveStaticFile := func(w http.ResponseWriter, r *http.Request, path string, cacheMaxAge int) bool {
+		if staticFS == nil {
+			return false
+		}
+
+		f, err := staticFS.Open(path)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+
+		stat, err := f.Stat()
+		if err != nil || stat.IsDir() {
+			return false
+		}
+
+		// Set cache headers
+		if cacheMaxAge > 0 {
+			w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(cacheMaxAge))
+		}
+
+		http.ServeContent(w, r, stat.Name(), stat.ModTime(), f.(io.ReadSeeker))
+		return true
+	}
+
+	// serveIndexHTML serves the SPA index.html (no cache for SPA entry point)
+	serveIndexHTML := func(w http.ResponseWriter, r *http.Request) {
+		if !serveStaticFile(w, r, "index.html", 0) {
+			http.NotFound(w, r)
+		}
+	}
+
 	// Setup HTTP routes
 	http.HandleFunc("/health", middleware.CORS(h.Health))
 	http.HandleFunc("/users", middleware.CORS(h.Users))
 	http.HandleFunc("/users/", middleware.CORS(h.User))
 	http.HandleFunc("/search", middleware.CORS(h.Search))
-	http.HandleFunc("/", middleware.CORS(h.User)) // deprecated
+
+	// Serve static assets (js, css, images, etc.) with long cache (1 year for hashed assets)
+	http.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if !serveStaticFile(w, r, path, 31536000) {
+			http.NotFound(w, r)
+		}
+	})
+
+	// Serve favicon and other root static files (1 day cache)
+	http.HandleFunc("/favicon.svg", func(w http.ResponseWriter, r *http.Request) {
+		serveStaticFile(w, r, "favicon.svg", 86400)
+	})
+
+	// Handle root and SPA routes
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+
+		// Root path - serve index.html
+		if path == "" {
+			serveIndexHTML(w, r)
+			return
+		}
+
+		// Known SPA routes - serve index.html
+		if path == "docs" {
+			serveIndexHTML(w, r)
+			return
+		}
+
+		// Try to serve as static file first (1 hour cache)
+		if serveStaticFile(w, r, path, 3600) {
+			return
+		}
+
+		// Fall back to User handler (deprecated /{pubkey} route)
+		middleware.CORS(h.User)(w, r)
+	})
 
 	// Start server
 	log.Printf("[API] Starting API server on port %s", cfg.Port)

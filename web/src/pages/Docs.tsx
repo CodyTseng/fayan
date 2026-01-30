@@ -1,6 +1,11 @@
 import CodeBlock from "../components/CodeBlock";
 
+const OFFICIAL_API = "https://fayan.jumble.social";
+
 export default function Docs() {
+  const baseUrl =
+    typeof window !== "undefined" ? window.location.origin : OFFICIAL_API;
+
   return (
     <main className="max-w-3xl mx-auto px-4 sm:px-6 py-16">
       <h1 className="text-2xl font-medium text-gray-900 mb-2">
@@ -12,7 +17,7 @@ export default function Docs() {
 
       <div className="mb-8 text-sm">
         <span className="text-gray-500">Base URL:</span>{" "}
-        <code className="text-gray-700">https://fayan.jumble.social</code>
+        <code className="text-gray-700">{baseUrl}</code>
       </div>
 
       {/* GET /users/{pubkey} */}
@@ -43,7 +48,7 @@ export default function Docs() {
 
         <h4 className="text-sm font-medium text-gray-700 mb-2">Example</h4>
         <CodeBlock
-          code={`curl https://fayan.jumble.social/users/82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2`}
+          code={`curl ${baseUrl}/users/82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2`}
           language="bash"
         />
 
@@ -87,7 +92,7 @@ export default function Docs() {
 
         <h4 className="text-sm font-medium text-gray-700 mb-2">Example</h4>
         <CodeBlock
-          code={`curl -X POST https://fayan.jumble.social/users \\
+          code={`curl -X POST ${baseUrl}/users \\
   -H "Content-Type: application/json" \\
   -d '{"pubkeys": ["82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2", "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"]}'`}
           language="bash"
@@ -161,7 +166,7 @@ export default function Docs() {
 
         <h4 className="text-sm font-medium text-gray-700 mb-2">Example</h4>
         <CodeBlock
-          code={`curl "https://fayan.jumble.social/search?q=jack&limit=5"`}
+          code={`curl "${baseUrl}/search?q=jack&limit=5"`}
           language="bash"
         />
 

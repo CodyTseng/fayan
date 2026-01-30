@@ -2,8 +2,6 @@ import { bareNostrUser, nostrUserFromEvent } from "@nostr/gadgets/metadata";
 import { NostrEvent } from "nostr-tools";
 import { npubEncode } from "nostr-tools/nip19";
 
-const API_BASE = "https://fayan.jumble.social";
-
 export function pubkeyToNpub(pubkey: string): string {
   if (pubkey.startsWith("npub1")) {
     return pubkey;
@@ -66,7 +64,7 @@ export async function searchUsers(
     limit: String(limit),
     offset: String(offset),
   });
-  const response = await fetch(`${API_BASE}/search?${params}`);
+  const response = await fetch(`/search?${params}`);
   if (!response.ok) {
     throw new Error(`Search failed: ${response.statusText}`);
   }
@@ -75,7 +73,7 @@ export async function searchUsers(
 }
 
 export async function getUser(pubkeyOrNpub: string): Promise<User | null> {
-  const response = await fetch(`${API_BASE}/users/${pubkeyOrNpub}`);
+  const response = await fetch(`/users/${pubkeyOrNpub}`);
   if (response.status === 404) {
     return null;
   }
@@ -87,7 +85,7 @@ export async function getUser(pubkeyOrNpub: string): Promise<User | null> {
 }
 
 export async function getUsers(pubkeys: string[]): Promise<User[]> {
-  const response = await fetch(`${API_BASE}/users`, {
+  const response = await fetch(`/users`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

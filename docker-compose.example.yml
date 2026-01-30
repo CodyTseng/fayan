@@ -2,6 +2,7 @@ version: "3.8"
 
 services:
   # Nostr network crawler service
+  # Crawls the network and calculates reputation scores
   crawler:
     build:
       context: .
@@ -18,7 +19,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Nostr API service
+  # API service with embedded web frontend
+  # Serves both REST API and web UI
   api:
     build:
       context: .
@@ -28,7 +30,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:ro
       - ./config.yaml:/app/config.yaml:ro
     restart: unless-stopped
     logging:
