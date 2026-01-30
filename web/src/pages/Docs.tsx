@@ -150,7 +150,7 @@ export default function Docs() {
                 <code>limit</code>
               </td>
               <td className="py-2 text-gray-600">
-                Number of results (default 10, max 100)
+                Number of results (default 20, max 100)
               </td>
             </tr>
             <tr className="border-b border-gray-100">
@@ -158,7 +158,7 @@ export default function Docs() {
                 <code>offset</code>
               </td>
               <td className="py-2 text-gray-600">
-                Number of results to skip (default 0)
+                Number of results to skip (default 0, max 1000)
               </td>
             </tr>
           </tbody>

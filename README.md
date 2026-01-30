@@ -115,8 +115,9 @@ Search for users by name, display name, or NIP-05 identifier. Results are sorted
 
 | Parameter | Type   | Required | Default | Description                     |
 | --------- | ------ | -------- | ------- | ------------------------------- |
-| q         | string | Yes      | -       | Search query                    |
-| limit     | int    | No       | 20      | Max results to return (max 100) |
+| q         | string | Yes      | -       | Search query                     |
+| limit     | int    | No       | 20      | Max results to return (max 100)  |
+| offset    | int    | No       | 0       | Results to skip (max 1000)       |
 
 **Response Fields:**
 

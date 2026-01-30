@@ -320,11 +320,11 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get offset parameter (default 0)
+	// Get offset parameter (default 0, max 1000 to prevent performance issues)
 	offset := 0
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		if parsedOffset, err := strconv.Atoi(offsetStr); err == nil && parsedOffset >= 0 {
-			offset = parsedOffset
+			offset = min(parsedOffset, 1000)
 		}
 	}
 
