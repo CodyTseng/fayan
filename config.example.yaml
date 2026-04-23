@@ -36,6 +36,16 @@ crawler:
   # Number of profile event processors (default: 4)
   num_profile_processors: 4
 
+# Vouch / report API endpoints (NIP-98 authenticated).
+# When enabled, POST /vouch and POST /report accept signed requests from users
+# to vouch for or report another pubkey. Vouches act as equal-weight follow
+# edges in the ranking graph (no need to actually follow). Reports shrink the
+# target's final score proportional to the trust-weighted report ratio.
+# Submissions from pubkeys with no TrustRank (and not in seed_pubkeys) are
+# silently ignored.
+vouch:
+  enabled: false
+
 # Default nostr relays to connect to, used for searching uesrs' relay lists
 relays:
   - wss://relay.damus.io/

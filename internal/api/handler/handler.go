@@ -22,14 +22,20 @@ type Handler struct {
 	repo         *repository.Repository
 	cache        *cache.Cache
 	searchConfig *config.SearchConfig
+	seedSet      map[string]struct{}
 }
 
 // New creates a new Handler instance
-func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.SearchConfig) *Handler {
+func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.SearchConfig, seedPubkeys []string) *Handler {
+	seedSet := make(map[string]struct{}, len(seedPubkeys))
+	for _, pk := range seedPubkeys {
+		seedSet[pk] = struct{}{}
+	}
 	return &Handler{
 		repo:         repo,
 		cache:        cache,
 		searchConfig: searchConfig,
+		seedSet:      seedSet,
 	}
 }
 

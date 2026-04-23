@@ -95,6 +95,41 @@ var migrations = []Migration{
 			return nil
 		},
 	},
+	{
+		Version: 4,
+		Name:    "add_vouches_and_reports",
+		Up: func(db *sql.DB) error {
+			vouchesTable := `
+			CREATE TABLE IF NOT EXISTS vouches (
+				source_pubkey TEXT NOT NULL,
+				target_pubkey TEXT NOT NULL,
+				created_at    TIMESTAMP NOT NULL,
+				PRIMARY KEY (source_pubkey, target_pubkey)
+			);`
+
+			reportsTable := `
+			CREATE TABLE IF NOT EXISTS reports (
+				source_pubkey TEXT NOT NULL,
+				target_pubkey TEXT NOT NULL,
+				created_at    TIMESTAMP NOT NULL,
+				PRIMARY KEY (source_pubkey, target_pubkey)
+			);`
+
+			if _, err := db.Exec(vouchesTable); err != nil {
+				return fmt.Errorf("failed to create vouches table: %w", err)
+			}
+			if _, err := db.Exec(reportsTable); err != nil {
+				return fmt.Errorf("failed to create reports table: %w", err)
+			}
+			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_vouches_target ON vouches(target_pubkey);"); err != nil {
+				return fmt.Errorf("failed to create idx_vouches_target: %w", err)
+			}
+			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_pubkey);"); err != nil {
+				return fmt.Errorf("failed to create idx_reports_target: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // RunMigrations executes all pending database migrations

@@ -24,3 +24,17 @@ type Connection struct {
 	Source string
 	Target string
 }
+
+// Vouch represents a user's explicit endorsement of another user,
+// authenticated via NIP-98 and submitted through the API.
+type Vouch struct {
+	Source string
+	Target string
+}
+
+// ReportAggregate summarises reports against a single target pubkey.
+// Only reporters with trust_score > 0 contribute.
+type ReportAggregate struct {
+	NumReporters       int
+	TotalReporterTrust float64
+}

@@ -27,20 +27,24 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize repository in read-only mode
-	repo, err := repository.New(cfg.Database, repository.ModeReadOnly)
+	// Initialize repository. Even if vouch endpoints are off, we open in
+	// read-write mode because it's the single place we centralise migrations
+	// and keep things consistent with the crawler. WAL + writeMu already
+	// coordinate concurrent writers across processes.
+	repo, err := repository.New(cfg.Database, repository.ModeReadWrite)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer repo.Close()
 
-	log.Println("[API] Database initialized successfully (read-only mode)")
+	log.Println("[API] Database initialized successfully (read-write mode)")
 
 	// Initialize cache
 	apiCache := cache.New(10*time.Minute, 10*time.Minute)
 
-	// Initialize handler with search config
-	h := handler.New(repo, apiCache, &cfg.Search)
+	// Initialize handler with search config and seed pubkeys (seeds always
+	// qualify for vouch/report submissions regardless of trust_score).
+	h := handler.New(repo, apiCache, &cfg.Search, cfg.SeedPubkeys)
 
 	// Setup static file system
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -86,6 +90,15 @@ func main() {
 	http.HandleFunc("/users", middleware.CORS(h.Users))
 	http.HandleFunc("/users/", middleware.CORS(h.User))
 	http.HandleFunc("/search", middleware.CORS(h.Search))
+
+	// Vouch / report endpoints (NIP-98 authenticated).
+	// When disabled in config, no route is registered and requests fall
+	// through to the SPA catch-all handler below.
+	if cfg.Vouch.Enabled {
+		http.HandleFunc("/vouch", middleware.CORS(middleware.NIP98Auth(h.Vouch)))
+		http.HandleFunc("/report", middleware.CORS(middleware.NIP98Auth(h.Report)))
+		log.Println("[API] Vouch/report endpoints enabled")
+	}
 
 	// Serve static assets (js, css, images, etc.) with long cache (1 year for hashed assets)
 	http.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {

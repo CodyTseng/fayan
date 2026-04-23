@@ -59,12 +59,22 @@ func (c *Calculator) Calculate() error {
 
 	cutoffTime := time.Now().UTC().AddDate(0, 0, -30)
 
+	// edgeSet dedupes (source, target) pairs across follow and vouch edges so
+	// a user who both follows and vouches for the same target contributes a
+	// single graph edge (not double flow).
+	edgeSet := make(map[int64]bool)
+	encodeEdge := func(s, t int32) int64 { return int64(s)<<32 | int64(uint32(t)) }
+
 	err := c.repo.StreamConnectionsInTx(func(conn models.Connection) error {
 		sourceID := getID(conn.Source)
 		targetID := getID(conn.Target)
 
 		if sourceID != targetID {
-			edges = append(edges, edge{source: sourceID, target: targetID})
+			key := encodeEdge(sourceID, targetID)
+			if !edgeSet[key] {
+				edgeSet[key] = true
+				edges = append(edges, edge{source: sourceID, target: targetID})
+			}
 		}
 		connectionCount++
 		return nil
@@ -74,13 +84,47 @@ func (c *Calculator) Calculate() error {
 		return err
 	}
 
+	// Vouch edges: admit only those from pubkeys with positive last-round
+	// TrustRank (seeds always admitted so the feature works on first run when
+	// no one has trust_score written yet).
+	vouchAdmitted := 0
+	qualifying, qErr := c.repo.GetPubkeysWithPositiveTrust()
+	if qErr != nil {
+		log.Printf("   [WARN] Failed to load qualifying pubkeys for vouch admission: %v", qErr)
+		qualifying = make(map[string]struct{})
+	}
+	for _, s := range c.seedPubkeys {
+		qualifying[s] = struct{}{}
+	}
+	if err := c.repo.StreamVouches(func(v models.Vouch) error {
+		if _, ok := qualifying[v.Source]; !ok {
+			return nil
+		}
+		sourceID := getID(v.Source)
+		targetID := getID(v.Target)
+		if sourceID == targetID {
+			return nil
+		}
+		key := encodeEdge(sourceID, targetID)
+		if edgeSet[key] {
+			return nil
+		}
+		edgeSet[key] = true
+		edges = append(edges, edge{source: sourceID, target: targetID})
+		vouchAdmitted++
+		return nil
+	}); err != nil {
+		return err
+	}
+	log.Printf("   [INFO] Vouch edges admitted: %d", vouchAdmitted)
+
 	numNodes := len(idToPubkey)
 	if numNodes == 0 {
 		log.Println("   [WARN] Graph is empty, skipping calculation")
 		return nil
 	}
 
-	log.Printf("   [INFO] Processing %d nodes, %d connections", numNodes, connectionCount)
+	log.Printf("   [INFO] Processing %d nodes, %d connections (+ %d vouches)", numNodes, connectionCount, vouchAdmitted)
 
 	// Build seed node set for TrustRank
 	seedSet := make(map[int32]bool)
@@ -124,6 +168,39 @@ func (c *Calculator) Calculate() error {
 	scores := make([]float64, numNodes)
 	for i := range numNodes {
 		scores[i] = c.trustRankWeight*trustScores[i] + c.pageRankWeight*pageScores[i]
+	}
+
+	// Apply trust-weighted report penalty: scale each target's scores by
+	// (1 - penalty) where penalty = R / (R + F + ε). R is the sum of reporter
+	// trust_scores (only reporters with trust_score > 0 count); F is the sum
+	// of follower/voucher trust_scores (in-edges). Rank is computed after
+	// penalty so penalized accounts drop in the final ordering.
+	if reports, err := c.repo.GetTrustWeightedReports(); err != nil {
+		log.Printf("   [WARN] Failed to load reports for penalty: %v", err)
+	} else if len(reports) > 0 {
+		fTrust := make([]float64, numNodes)
+		for i := range numNodes {
+			for _, j := range inLinks[i] {
+				fTrust[i] += trustScores[j]
+			}
+		}
+		penalized := 0
+		for i := range numNodes {
+			agg, ok := reports[idToPubkey[i]]
+			if !ok || agg.TotalReporterTrust <= 0 {
+				continue
+			}
+			penalty := agg.TotalReporterTrust / (agg.TotalReporterTrust + fTrust[i] + 1e-9)
+			if penalty > 1 {
+				penalty = 1
+			}
+			factor := 1 - penalty
+			scores[i] *= factor
+			trustScores[i] *= factor
+			pageScores[i] *= factor
+			penalized++
+		}
+		log.Printf("   [INFO] Applied report penalty to %d pubkeys", penalized)
 	}
 
 	// Calculate ranks based on scores

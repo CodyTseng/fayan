@@ -28,6 +28,12 @@ type CrawlerConfig struct {
 	NumProfileProcessors int `yaml:"num_profile_processors"` // Number of profile event processors (default: 4)
 }
 
+// VouchConfig enables the /vouch and /report API endpoints.
+// Submissions are authenticated via NIP-98.
+type VouchConfig struct {
+	Enabled bool `yaml:"enabled"` // Default: false. When false, the endpoints return 404.
+}
+
 // Config represents the application configuration
 type Config struct {
 	Relays           []string      `yaml:"relays"`
@@ -38,6 +44,7 @@ type Config struct {
 	Search           SearchConfig  `yaml:"search"`
 	Ranking          RankingConfig `yaml:"ranking"`
 	Crawler          CrawlerConfig `yaml:"crawler"`
+	Vouch            VouchConfig   `yaml:"vouch"`
 }
 
 // Load reads and parses the configuration file
@@ -62,6 +69,9 @@ func Load(path string) (*Config, error) {
 			NumContactProcessors: 4,
 			NumProfileProcessors: 4,
 		},
+		Vouch: VouchConfig{
+			Enabled: false,
+		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
@@ -80,6 +90,7 @@ func Load(path string) (*Config, error) {
 	log.Printf("[CONFIG] - Ranking weights: TrustRank=%.2f, PageRank=%.2f", cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
 	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
 		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
+	log.Printf("[CONFIG] - Vouch endpoints enabled: %t", cfg.Vouch.Enabled)
 
 	return &cfg, nil
 }

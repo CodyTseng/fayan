@@ -34,8 +34,8 @@ docker compose up --build
 
 The repository supports two modes via `repository.New(path, mode)`:
 
-- `ModeReadWrite`: For crawler - writes connections and scores
-- `ModeReadOnly`: For API - optimized for concurrent reads with `PRAGMA query_only = ON`
+- `ModeReadWrite`: For crawler and API (API opens read-write so the NIP-98 endpoints can insert into `vouches`/`reports`). WAL mode + `writeMu` coordinate the two processes.
+- `ModeReadOnly`: Reserved for read-only tools; sets `PRAGMA query_only = ON` and a 10-connection pool.
 
 ### Key Packages
 
@@ -82,3 +82,13 @@ Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to
 - `crawler.request_interval_ms`: Milliseconds between requests per relay (default: 500)
 - `crawler.num_contact_processors`: Number of contact event processors (default: 4)
 - `crawler.num_profile_processors`: Number of profile event processors (default: 4)
+- `vouch.enabled`: Enable `POST /vouch` and `POST /report` endpoints (default: false)
+
+### Vouch & Report Endpoints (when `vouch.enabled: true`)
+
+Two NIP-98 authenticated endpoints let users contribute to the graph without following:
+
+- `POST /vouch` with body `{"target": "<hex pubkey>"}` — registers source→target as a vouch edge in the ranking graph (equal weight to a follow, deduped against follows from the same source).
+- `POST /report` with body `{"target": "<hex pubkey>"}` — reports the target. Reports apply a trust-weighted penalty to the target's final score: `final = raw * (1 - R/(R+F))` where R is the sum of reporter trust_scores and F is the sum of follower/voucher trust_scores.
+
+No DELETE endpoints — the two actions are mutually exclusive per (source, target). Posting a report implicitly deletes any prior vouch for the same target, and vice versa. Submissions from pubkeys with no TrustRank and not in `seed_pubkeys` return 200 but are silently dropped (prevents spam inflation). Schema stored in `vouches` and `reports` tables (migration v4).
