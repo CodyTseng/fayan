@@ -32,6 +32,9 @@ type CrawlerConfig struct {
 // Submissions are authenticated via NIP-98.
 type VouchConfig struct {
 	Enabled bool `yaml:"enabled"` // Default: false. When false, the endpoints return 404.
+	// Weight of a vouch edge relative to a follow edge (1.0). Must be in (0, 1].
+	// Lower values make vouches contribute less flow than follows. Default: 0.5.
+	Weight float64 `yaml:"weight"`
 }
 
 // Config represents the application configuration
@@ -71,6 +74,7 @@ func Load(path string) (*Config, error) {
 		},
 		Vouch: VouchConfig{
 			Enabled: false,
+			Weight:  0.5,
 		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -90,7 +94,7 @@ func Load(path string) (*Config, error) {
 	log.Printf("[CONFIG] - Ranking weights: TrustRank=%.2f, PageRank=%.2f", cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
 	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
 		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
-	log.Printf("[CONFIG] - Vouch endpoints enabled: %t", cfg.Vouch.Enabled)
+	log.Printf("[CONFIG] - Vouch endpoints enabled: %t (weight=%.2f)", cfg.Vouch.Enabled, cfg.Vouch.Weight)
 
 	return &cfg, nil
 }

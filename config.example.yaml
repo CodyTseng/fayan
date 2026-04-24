@@ -38,13 +38,16 @@ crawler:
 
 # Vouch / report API endpoints (NIP-98 authenticated).
 # When enabled, POST /vouch and POST /report accept signed requests from users
-# to vouch for or report another pubkey. Vouches act as equal-weight follow
-# edges in the ranking graph (no need to actually follow). Reports shrink the
+# to vouch for or report another pubkey. Vouches act as weighted follow edges
+# in the ranking graph (no need to actually follow). Reports shrink the
 # target's final score proportional to the trust-weighted report ratio.
 # Submissions from pubkeys with no TrustRank (and not in seed_pubkeys) are
 # silently ignored.
 vouch:
   enabled: false
+  # Weight of a vouch edge relative to a follow edge (1.0). Must be in (0, 1].
+  # Lower values make vouches contribute less flow than a follow. Default: 0.5.
+  weight: 0.5
 
 # Default nostr relays to connect to, used for searching uesrs' relay lists
 relays:

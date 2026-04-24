@@ -55,7 +55,7 @@ func TestVouchPromotesUnfollowedUser(t *testing.T) {
 	insertFollow(t, repo, "seed2", "seed3")
 	insertFollow(t, repo, "seed3", "seed1")
 
-	calc := NewCalculator(repo, seeds, 0.7, 0.3)
+	calc := NewCalculator(repo, seeds, 0.7, 0.3, 0.5)
 
 	// First pass: seeds acquire trust_score > 0.
 	if err := calc.Calculate(); err != nil {
@@ -84,6 +84,47 @@ func TestVouchPromotesUnfollowedUser(t *testing.T) {
 	}
 }
 
+// TestVouchWeightShrinksContribution verifies that a lower vouchWeight
+// reduces the score a vouch-only edge contributes, relative to a full-weight
+// (1.0) follow edge.
+func TestVouchWeightShrinksContribution(t *testing.T) {
+	repo := newTestRepo(t)
+
+	seeds := []string{"seed1", "seed2", "seed3"}
+	insertFollow(t, repo, "seed1", "seed2")
+	insertFollow(t, repo, "seed2", "seed3")
+	insertFollow(t, repo, "seed3", "seed1")
+
+	// Bootstrap seed trust.
+	calcHigh := NewCalculator(repo, seeds, 0.7, 0.3, 1.0)
+	if err := calcHigh.Calculate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetVouch("seed1", "newbie"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := calcHigh.Calculate(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, scoreAtWeight1 := getUser(t, repo, "newbie")
+
+	// Run the same graph again with vouchWeight=0.25.
+	calcLow := NewCalculator(repo, seeds, 0.7, 0.3, 0.25)
+	if err := calcLow.Calculate(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, scoreAtWeight025 := getUser(t, repo, "newbie")
+
+	if !(scoreAtWeight025 < scoreAtWeight1) {
+		t.Fatalf("expected lower vouch weight to produce lower score, got %.6g (w=0.25) vs %.6g (w=1.0)",
+			scoreAtWeight025, scoreAtWeight1)
+	}
+	if scoreAtWeight025 <= 0 {
+		t.Fatalf("score at w=0.25 should still be positive, got %v", scoreAtWeight025)
+	}
+}
+
 // TestVouchAndFollowDedupe verifies A following AND vouching for B only
 // produces one edge (A's following count = 1, not 2).
 func TestVouchAndFollowDedupe(t *testing.T) {
@@ -104,7 +145,7 @@ func TestVouchAndFollowDedupe(t *testing.T) {
 		Following:  1,
 	}})
 
-	calc := NewCalculator(repo, []string{"a"}, 0.7, 0.3)
+	calc := NewCalculator(repo, []string{"a"}, 0.7, 0.3, 0.5)
 	if err := calc.Calculate(); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +174,7 @@ func TestReportDecaysScore(t *testing.T) {
 	insertFollow(t, repo, "seed2", "x")
 	insertFollow(t, repo, "seed3", "x")
 
-	calc := NewCalculator(repo, seeds, 0.7, 0.3)
+	calc := NewCalculator(repo, seeds, 0.7, 0.3, 0.5)
 	if err := calc.Calculate(); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +228,7 @@ func TestReportWithNoTrustIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	calc := NewCalculator(repo, seeds, 0.7, 0.3)
+	calc := NewCalculator(repo, seeds, 0.7, 0.3, 0.5)
 	if err := calc.Calculate(); err != nil {
 		t.Fatal(err)
 	}

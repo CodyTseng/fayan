@@ -15,21 +15,31 @@ type scoreWithID struct {
 	score float64
 }
 
+// inLink represents a single weighted in-edge in the adjacency list.
+// Weight is 1.0 for follow edges and vouchWeight for vouch-only edges.
+type inLink struct {
+	source int32
+	weight float64
+}
+
 // Calculator handles PageRank and TrustRank calculations
 type Calculator struct {
 	repo            *repository.Repository
 	seedPubkeys     []string
 	trustRankWeight float64
 	pageRankWeight  float64
+	vouchWeight     float64
 }
 
-// NewCalculator creates a new Calculator instance
-func NewCalculator(repo *repository.Repository, seedPubkeys []string, trustRankWeight, pageRankWeight float64) *Calculator {
+// NewCalculator creates a new Calculator instance.
+// vouchWeight is the relative weight of a vouch-only edge (follow edges are 1.0).
+func NewCalculator(repo *repository.Repository, seedPubkeys []string, trustRankWeight, pageRankWeight, vouchWeight float64) *Calculator {
 	return &Calculator{
 		repo:            repo,
 		seedPubkeys:     seedPubkeys,
 		trustRankWeight: trustRankWeight,
 		pageRankWeight:  pageRankWeight,
+		vouchWeight:     vouchWeight,
 	}
 }
 
@@ -41,6 +51,7 @@ func (c *Calculator) Calculate() error {
 	type edge struct {
 		source int32
 		target int32
+		weight float64
 	}
 	edges := make([]edge, 0, 1000)
 
@@ -61,7 +72,7 @@ func (c *Calculator) Calculate() error {
 
 	// edgeSet dedupes (source, target) pairs across follow and vouch edges so
 	// a user who both follows and vouches for the same target contributes a
-	// single graph edge (not double flow).
+	// single follow-weighted edge (not double flow).
 	edgeSet := make(map[int64]bool)
 	encodeEdge := func(s, t int32) int64 { return int64(s)<<32 | int64(uint32(t)) }
 
@@ -73,7 +84,7 @@ func (c *Calculator) Calculate() error {
 			key := encodeEdge(sourceID, targetID)
 			if !edgeSet[key] {
 				edgeSet[key] = true
-				edges = append(edges, edge{source: sourceID, target: targetID})
+				edges = append(edges, edge{source: sourceID, target: targetID, weight: 1.0})
 			}
 		}
 		connectionCount++
@@ -110,13 +121,13 @@ func (c *Calculator) Calculate() error {
 			return nil
 		}
 		edgeSet[key] = true
-		edges = append(edges, edge{source: sourceID, target: targetID})
+		edges = append(edges, edge{source: sourceID, target: targetID, weight: c.vouchWeight})
 		vouchAdmitted++
 		return nil
 	}); err != nil {
 		return err
 	}
-	log.Printf("   [INFO] Vouch edges admitted: %d", vouchAdmitted)
+	log.Printf("   [INFO] Vouch edges admitted: %d (weight=%.2f)", vouchAdmitted, c.vouchWeight)
 
 	numNodes := len(idToPubkey)
 	if numNodes == 0 {
@@ -135,12 +146,16 @@ func (c *Calculator) Calculate() error {
 	}
 	log.Printf("   [INFO] Found %d seed nodes in graph (out of %d configured)", len(seedSet), len(c.seedPubkeys))
 
-	// Build the graph using slices (Adjacency List)
-	inLinks := make([][]int32, numNodes)
+	// Build the weighted graph.
+	// outWeight[i] is the sum of outgoing edge weights (used by flow math).
+	// outDegree[i] is the discrete count (used only for the Following field).
+	inLinks := make([][]inLink, numNodes)
+	outWeight := make([]float64, numNodes)
 	outDegree := make([]int32, numNodes)
 
 	for _, e := range edges {
-		inLinks[e.target] = append(inLinks[e.target], e.source)
+		inLinks[e.target] = append(inLinks[e.target], inLink{source: e.source, weight: e.weight})
+		outWeight[e.source] += e.weight
 		outDegree[e.source]++
 	}
 
@@ -152,13 +167,13 @@ func (c *Calculator) Calculate() error {
 
 	// Run PageRank
 	log.Println("   [INFO] Running PageRank...")
-	pageScores := c.runPageRank(numNodes, inLinks, outDegree, dampingFactor, tolerance, maxIterations)
+	pageScores := c.runPageRank(numNodes, inLinks, outWeight, dampingFactor, tolerance, maxIterations)
 
 	// Run TrustRank
 	var trustScores []float64
 	if len(seedSet) > 0 {
 		log.Println("   [INFO] Running TrustRank...")
-		trustScores = c.runTrustRank(numNodes, inLinks, outDegree, seedSet, dampingFactor, tolerance, maxIterations)
+		trustScores = c.runTrustRank(numNodes, inLinks, outWeight, seedSet, dampingFactor, tolerance, maxIterations)
 	} else {
 		log.Println("   [WARN] No seed nodes found, skipping TrustRank")
 		trustScores = make([]float64, numNodes)
@@ -173,15 +188,15 @@ func (c *Calculator) Calculate() error {
 	// Apply trust-weighted report penalty: scale each target's scores by
 	// (1 - penalty) where penalty = R / (R + F + ε). R is the sum of reporter
 	// trust_scores (only reporters with trust_score > 0 count); F is the sum
-	// of follower/voucher trust_scores (in-edges). Rank is computed after
-	// penalty so penalized accounts drop in the final ordering.
+	// of follower/voucher trust_scores weighted by their edge weights. Rank
+	// is computed after penalty so penalized accounts drop in the ordering.
 	if reports, err := c.repo.GetTrustWeightedReports(); err != nil {
 		log.Printf("   [WARN] Failed to load reports for penalty: %v", err)
 	} else if len(reports) > 0 {
 		fTrust := make([]float64, numNodes)
 		for i := range numNodes {
-			for _, j := range inLinks[i] {
-				fTrust[i] += trustScores[j]
+			for _, link := range inLinks[i] {
+				fTrust[i] += trustScores[link.source] * link.weight
 			}
 		}
 		penalized := 0
@@ -265,8 +280,10 @@ func (c *Calculator) Calculate() error {
 	return nil
 }
 
-// runPageRank executes the PageRank algorithm
-func (c *Calculator) runPageRank(numNodes int, inLinks [][]int32, outDegree []int32, damping, tolerance float64, maxIterations int) []float64 {
+// runPageRank executes the weighted PageRank algorithm.
+// Each in-edge carries its own weight; a node's score is distributed among
+// its out-neighbors in proportion to edge weight (sum equals outWeight[j]).
+func (c *Calculator) runPageRank(numNodes int, inLinks [][]inLink, outWeight []float64, damping, tolerance float64, maxIterations int) []float64 {
 	scores := make([]float64, numNodes)
 	newScores := make([]float64, numNodes)
 	initialScore := 1.0 / float64(numNodes)
@@ -278,15 +295,15 @@ func (c *Calculator) runPageRank(numNodes int, inLinks [][]int32, outDegree []in
 	for iter := 0; iter < maxIterations; iter++ {
 		danglingSum := 0.0
 		for i := range numNodes {
-			if outDegree[i] == 0 {
+			if outWeight[i] == 0 {
 				danglingSum += scores[i]
 			}
 		}
 
 		for i := range numNodes {
 			sum := 0.0
-			for _, j := range inLinks[i] {
-				sum += scores[j] / float64(outDegree[j])
+			for _, link := range inLinks[i] {
+				sum += scores[link.source] * link.weight / outWeight[link.source]
 			}
 			newScores[i] = (1-damping)/float64(numNodes) + damping*(sum+danglingSum/float64(numNodes))
 		}
@@ -308,8 +325,8 @@ func (c *Calculator) runPageRank(numNodes int, inLinks [][]int32, outDegree []in
 	return scores
 }
 
-// runTrustRank executes the TrustRank algorithm
-func (c *Calculator) runTrustRank(numNodes int, inLinks [][]int32, outDegree []int32, seedSet map[int32]bool, damping, tolerance float64, maxIterations int) []float64 {
+// runTrustRank executes the weighted TrustRank algorithm.
+func (c *Calculator) runTrustRank(numNodes int, inLinks [][]inLink, outWeight []float64, seedSet map[int32]bool, damping, tolerance float64, maxIterations int) []float64 {
 	scores := make([]float64, numNodes)
 	newScores := make([]float64, numNodes)
 
@@ -322,15 +339,15 @@ func (c *Calculator) runTrustRank(numNodes int, inLinks [][]int32, outDegree []i
 	for iter := range maxIterations {
 		danglingSum := 0.0
 		for i := range numNodes {
-			if outDegree[i] == 0 {
+			if outWeight[i] == 0 {
 				danglingSum += scores[i]
 			}
 		}
 
 		for i := range numNodes {
 			sum := 0.0
-			for _, j := range inLinks[i] {
-				sum += scores[j] / float64(outDegree[j])
+			for _, link := range inLinks[i] {
+				sum += scores[link.source] * link.weight / outWeight[link.source]
 			}
 
 			// In TrustRank, dangling node scores only flow back to seed nodes

@@ -41,7 +41,7 @@ func main() {
 	log.Println("[DATABASE] Ready (read-write mode)")
 
 	// 3. Create ranking calculator
-	calculator := ranking.NewCalculator(repo, cfg.SeedPubkeys, cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
+	calculator := ranking.NewCalculator(repo, cfg.SeedPubkeys, cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight, cfg.Vouch.Weight)
 
 	// 4. Perform an initial rank calculation
 	log.Println("[RANK] Performing initial calculation...")
