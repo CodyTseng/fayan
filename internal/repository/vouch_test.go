@@ -12,7 +12,7 @@ func newTestRepo(t *testing.T) *Repository {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	repo, err := New(path, ModeReadWrite)
+	repo, err := New(path)
 	if err != nil {
 		t.Fatalf("failed to open repo: %v", err)
 	}

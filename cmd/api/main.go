@@ -27,17 +27,13 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize repository. Even if vouch endpoints are off, we open in
-	// read-write mode because it's the single place we centralise migrations
-	// and keep things consistent with the crawler. WAL + writeMu already
-	// coordinate concurrent writers across processes.
-	repo, err := repository.New(cfg.Database, repository.ModeReadWrite)
+	repo, err := repository.New(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer repo.Close()
 
-	log.Println("[API] Database initialized successfully (read-write mode)")
+	log.Println("[API] Database initialized successfully")
 
 	// Initialize cache
 	apiCache := cache.New(10*time.Minute, 10*time.Minute)

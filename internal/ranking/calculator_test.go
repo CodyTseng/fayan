@@ -11,7 +11,7 @@ import (
 func newTestRepo(t *testing.T) *repository.Repository {
 	t.Helper()
 	dir := t.TempDir()
-	repo, err := repository.New(filepath.Join(dir, "test.db"), repository.ModeReadWrite)
+	repo, err := repository.New(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatalf("open repo: %v", err)
 	}

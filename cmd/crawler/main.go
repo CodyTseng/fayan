@@ -31,9 +31,9 @@ func main() {
 		log.Fatalf("[CONFIG] Failed to load configuration: %v", err)
 	}
 
-	// 2. Initialize Repository in read-write mode
+	// 2. Initialize Repository
 	log.Println("[DATABASE] Initializing...")
-	repo, err := repository.New(cfg.Database, repository.ModeReadWrite)
+	repo, err := repository.New(cfg.Database)
 	if err != nil {
 		log.Fatalf("[DATABASE] Failed to initialize: %v", err)
 	}

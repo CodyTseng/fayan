@@ -30,12 +30,9 @@ docker compose up --build
 - **Crawler** (`cmd/crawler/main.go`): Crawls the Nostr network, stores follow relationships in SQLite, periodically calculates PageRank/TrustRank scores
 - **API** (`cmd/api/main.go`): Read-only HTTP server that queries reputation data
 
-### Database Access Modes
+### Database Access
 
-The repository supports two modes via `repository.New(path, mode)`:
-
-- `ModeReadWrite`: For crawler and API (API opens read-write so the NIP-98 endpoints can insert into `vouches`/`reports`). WAL mode + `writeMu` coordinate the two processes.
-- `ModeReadOnly`: Reserved for read-only tools; sets `PRAGMA query_only = ON` and a 10-connection pool.
+`repository.New(path)` opens a single read-write handle. WAL mode allows multiple concurrent readers alongside a single writer; within a process `writeMu` serializes writers, and SQLite's own locks coordinate across the crawler and API processes. The connection pool is sized for 10 concurrent readers.
 
 ### Key Packages
 
