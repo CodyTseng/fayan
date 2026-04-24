@@ -79,9 +79,9 @@ Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to
 - `crawler.request_interval_ms`: Milliseconds between requests per relay (default: 500)
 - `crawler.num_contact_processors`: Number of contact event processors (default: 4)
 - `crawler.num_profile_processors`: Number of profile event processors (default: 4)
-- `vouch.enabled`: Enable `POST /vouch` and `POST /report` endpoints (default: false)
+- `vouch.weight`: Enables the feature (0 = disabled, default) and sets the weight of a vouch edge relative to a follow edge (1.0). Typical enabled value: `0.5`.
 
-### Vouch & Report Endpoints (when `vouch.enabled: true`)
+### Vouch & Report Endpoints (when `vouch.weight > 0`)
 
 Two NIP-98 authenticated endpoints let users contribute to the graph without following:
 

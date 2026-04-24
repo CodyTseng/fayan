@@ -28,14 +28,19 @@ type CrawlerConfig struct {
 	NumProfileProcessors int `yaml:"num_profile_processors"` // Number of profile event processors (default: 4)
 }
 
-// VouchConfig enables the /vouch and /report API endpoints.
-// Submissions are authenticated via NIP-98.
+// VouchConfig controls the /vouch and /report API endpoints and the
+// weight of vouch edges in the ranking graph.
+//
+// A single knob: weight == 0 disables the feature entirely (endpoints
+// return 404, vouches are not read by the ranking calculator);
+// weight > 0 enables the feature and sets the vouch-edge weight relative
+// to a follow edge (1.0). Typical values: 0.5. Must be in [0, 1].
 type VouchConfig struct {
-	Enabled bool `yaml:"enabled"` // Default: false. When false, the endpoints return 404.
-	// Weight of a vouch edge relative to a follow edge (1.0). Must be in (0, 1].
-	// Lower values make vouches contribute less flow than follows. Default: 0.5.
 	Weight float64 `yaml:"weight"`
 }
+
+// Enabled reports whether the vouch feature is active.
+func (v VouchConfig) Enabled() bool { return v.Weight > 0 }
 
 // Config represents the application configuration
 type Config struct {
@@ -73,8 +78,7 @@ func Load(path string) (*Config, error) {
 			NumProfileProcessors: 4,
 		},
 		Vouch: VouchConfig{
-			Enabled: false,
-			Weight:  0.5,
+			Weight: 0, // disabled by default
 		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -94,7 +98,11 @@ func Load(path string) (*Config, error) {
 	log.Printf("[CONFIG] - Ranking weights: TrustRank=%.2f, PageRank=%.2f", cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
 	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
 		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
-	log.Printf("[CONFIG] - Vouch endpoints enabled: %t (weight=%.2f)", cfg.Vouch.Enabled, cfg.Vouch.Weight)
+	if cfg.Vouch.Enabled() {
+		log.Printf("[CONFIG] - Vouch endpoints enabled (weight=%.2f)", cfg.Vouch.Weight)
+	} else {
+		log.Printf("[CONFIG] - Vouch endpoints disabled (weight=0)")
+	}
 
 	return &cfg, nil
 }

@@ -97,37 +97,40 @@ func (c *Calculator) Calculate() error {
 
 	// Vouch edges: admit only those from pubkeys with positive last-round
 	// TrustRank (seeds always admitted so the feature works on first run when
-	// no one has trust_score written yet).
+	// no one has trust_score written yet). Skipped entirely when the feature
+	// is disabled (vouchWeight <= 0).
 	vouchAdmitted := 0
-	qualifying, qErr := c.repo.GetPubkeysWithPositiveTrust()
-	if qErr != nil {
-		log.Printf("   [WARN] Failed to load qualifying pubkeys for vouch admission: %v", qErr)
-		qualifying = make(map[string]struct{})
-	}
-	for _, s := range c.seedPubkeys {
-		qualifying[s] = struct{}{}
-	}
-	if err := c.repo.StreamVouches(func(v models.Vouch) error {
-		if _, ok := qualifying[v.Source]; !ok {
-			return nil
+	if c.vouchWeight > 0 {
+		qualifying, qErr := c.repo.GetPubkeysWithPositiveTrust()
+		if qErr != nil {
+			log.Printf("   [WARN] Failed to load qualifying pubkeys for vouch admission: %v", qErr)
+			qualifying = make(map[string]struct{})
 		}
-		sourceID := getID(v.Source)
-		targetID := getID(v.Target)
-		if sourceID == targetID {
-			return nil
+		for _, s := range c.seedPubkeys {
+			qualifying[s] = struct{}{}
 		}
-		key := encodeEdge(sourceID, targetID)
-		if edgeSet[key] {
+		if err := c.repo.StreamVouches(func(v models.Vouch) error {
+			if _, ok := qualifying[v.Source]; !ok {
+				return nil
+			}
+			sourceID := getID(v.Source)
+			targetID := getID(v.Target)
+			if sourceID == targetID {
+				return nil
+			}
+			key := encodeEdge(sourceID, targetID)
+			if edgeSet[key] {
+				return nil
+			}
+			edgeSet[key] = true
+			edges = append(edges, edge{source: sourceID, target: targetID, weight: c.vouchWeight})
+			vouchAdmitted++
 			return nil
+		}); err != nil {
+			return err
 		}
-		edgeSet[key] = true
-		edges = append(edges, edge{source: sourceID, target: targetID, weight: c.vouchWeight})
-		vouchAdmitted++
-		return nil
-	}); err != nil {
-		return err
+		log.Printf("   [INFO] Vouch edges admitted: %d (weight=%.2f)", vouchAdmitted, c.vouchWeight)
 	}
-	log.Printf("   [INFO] Vouch edges admitted: %d (weight=%.2f)", vouchAdmitted, c.vouchWeight)
 
 	numNodes := len(idToPubkey)
 	if numNodes == 0 {

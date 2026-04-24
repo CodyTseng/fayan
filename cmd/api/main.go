@@ -88,12 +88,12 @@ func main() {
 	http.HandleFunc("/search", middleware.CORS(h.Search))
 
 	// Vouch / report endpoints (NIP-98 authenticated).
-	// When disabled in config, no route is registered and requests fall
-	// through to the SPA catch-all handler below.
-	if cfg.Vouch.Enabled {
+	// When vouch.weight <= 0 the feature is disabled: no route is registered
+	// and requests fall through to the SPA catch-all handler below.
+	if cfg.Vouch.Enabled() {
 		http.HandleFunc("/vouch", middleware.CORS(middleware.NIP98Auth(h.Vouch)))
 		http.HandleFunc("/report", middleware.CORS(middleware.NIP98Auth(h.Report)))
-		log.Println("[API] Vouch/report endpoints enabled")
+		log.Printf("[API] Vouch/report endpoints enabled (weight=%.2f)", cfg.Vouch.Weight)
 	}
 
 	// Serve static assets (js, css, images, etc.) with long cache (1 year for hashed assets)
