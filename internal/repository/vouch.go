@@ -154,7 +154,7 @@ func (r *Repository) GetPubkeysWithPositiveTrust() (map[string]struct{}, error) 
 // flow and the report subtracts it, which roughly cancels out on its own.
 func (r *Repository) GetTrustWeightedReports() (map[string]models.ReportAggregate, error) {
 	query := `
-		SELECT r.target_pubkey, COUNT(*), COALESCE(SUM(p.trust_score), 0)
+		SELECT r.target_pubkey, COALESCE(SUM(p.trust_score), 0)
 		FROM reports r
 		JOIN pubkeys p ON p.pubkey = r.source_pubkey
 		WHERE p.trust_score > 0
@@ -170,7 +170,7 @@ func (r *Repository) GetTrustWeightedReports() (map[string]models.ReportAggregat
 	for rows.Next() {
 		var target string
 		var agg models.ReportAggregate
-		if err := rows.Scan(&target, &agg.NumReporters, &agg.TotalReporterTrust); err != nil {
+		if err := rows.Scan(&target, &agg.TotalReporterTrust); err != nil {
 			return nil, fmt.Errorf("failed to scan report aggregate: %w", err)
 		}
 		result[target] = agg

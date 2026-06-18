@@ -61,17 +61,7 @@ func (in *Ingester) Apply(ev *nostr.Event) (handled bool, err error) {
 // IsVouchSet reports whether ev is the NIP-51 follow set (kind:30000) Fayan
 // uses as a vouch set, i.e. tagged with VouchSetIdentifier.
 func IsVouchSet(ev *nostr.Event) bool {
-	return ev.Kind == KindVouchSet && dTagValue(ev.Tags) == VouchSetIdentifier
-}
-
-// dTagValue returns the value of the first `d` tag, or "" if absent.
-func dTagValue(tags nostr.Tags) string {
-	for _, tag := range tags {
-		if len(tag) >= 2 && tag[0] == "d" {
-			return tag[1]
-		}
-	}
-	return ""
+	return ev.Kind == KindVouchSet && ev.Tags.GetD() == VouchSetIdentifier
 }
 
 // ApplyContacts parses a kind:3 event into follow connections and persists them.

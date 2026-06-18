@@ -35,6 +35,5 @@ type Vouch struct {
 // ReportAggregate summarises reports against a single target pubkey.
 // Only reporters with trust_score > 0 contribute.
 type ReportAggregate struct {
-	NumReporters       int
 	TotalReporterTrust float64
 }

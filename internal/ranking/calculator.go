@@ -196,26 +196,29 @@ func (c *Calculator) Calculate() error {
 	if reports, err := c.repo.GetTrustWeightedReports(); err != nil {
 		log.Printf("   [WARN] Failed to load reports for penalty: %v", err)
 	} else if len(reports) > 0 {
-		fTrust := make([]float64, numNodes)
-		for i := range numNodes {
-			for _, link := range inLinks[i] {
-				fTrust[i] += trustScores[link.source] * link.weight
-			}
-		}
+		// Reported targets are sparse, so compute F (weighted follower/voucher
+		// trust) only for them rather than scanning the whole graph.
 		penalized := 0
-		for i := range numNodes {
-			agg, ok := reports[idToPubkey[i]]
-			if !ok || agg.TotalReporterTrust <= 0 {
+		for target, agg := range reports {
+			if agg.TotalReporterTrust <= 0 {
 				continue
 			}
-			penalty := agg.TotalReporterTrust / (agg.TotalReporterTrust + fTrust[i] + 1e-9)
+			id, ok := pubkeyToID[target]
+			if !ok {
+				continue
+			}
+			fTrust := 0.0
+			for _, link := range inLinks[id] {
+				fTrust += trustScores[link.source] * link.weight
+			}
+			penalty := agg.TotalReporterTrust / (agg.TotalReporterTrust + fTrust + 1e-9)
 			if penalty > 1 {
 				penalty = 1
 			}
 			factor := 1 - penalty
-			scores[i] *= factor
-			trustScores[i] *= factor
-			pageScores[i] *= factor
+			scores[id] *= factor
+			trustScores[id] *= factor
+			pageScores[id] *= factor
 			penalized++
 		}
 		log.Printf("   [INFO] Applied report penalty to %d pubkeys", penalized)

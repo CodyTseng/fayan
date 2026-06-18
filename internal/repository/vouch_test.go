@@ -256,9 +256,6 @@ func TestGetTrustWeightedReports(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'target' in aggregates")
 	}
-	if agg.NumReporters != 2 {
-		t.Fatalf("expected 2 trusted reporters, got %d", agg.NumReporters)
-	}
 	expected := 0.3 + 0.7
 	if absDiff(agg.TotalReporterTrust, expected) > 1e-9 {
 		t.Fatalf("expected trust sum %v, got %v", expected, agg.TotalReporterTrust)
