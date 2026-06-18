@@ -1,26 +1,24 @@
 package repository
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
 	"fayan/internal/models"
 )
 
-// SetVouch records source→target as a vouch relationship and atomically removes
-// any existing report from source to the same target (mutual-exclusion toggle).
-// The target pubkey row is upserted so ranking can cover brand-new targets.
-func (r *Repository) SetVouch(source, target string) error {
-	return r.setRelation(source, target, "vouches", "reports")
-}
+// UpsertVouches refreshes the vouch edges from source for the pubkeys in the
+// latest kind:10040 set, mirroring how kind:3 contacts are stored: each edge is
+// upserted with last_seen = now and never actively deleted. A vouch dropped
+// from the set simply stops being refreshed and ages out of the ranking graph
+// via the same staleness window as follows (see StreamVouches). Targets are
+// upserted into pubkeys so ranking can cover brand-new accounts.
+func (r *Repository) UpsertVouches(source string, targets []string) error {
+	if len(targets) == 0 {
+		return nil
+	}
 
-// SetReport records source→target as a report and atomically removes any
-// existing vouch from source to the same target.
-func (r *Repository) SetReport(source, target string) error {
-	return r.setRelation(source, target, "reports", "vouches")
-}
-
-func (r *Repository) setRelation(source, target, insertTable, deleteTable string) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 
@@ -32,6 +30,46 @@ func (r *Repository) setRelation(source, target, insertTable, deleteTable string
 
 	now := time.Now().UTC()
 
+	pkStmt, err := tx.Prepare(`INSERT INTO pubkeys (pubkey, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT(pubkey) DO NOTHING;`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare pubkey statement: %w", err)
+	}
+	defer pkStmt.Close()
+
+	vStmt, err := tx.Prepare(`REPLACE INTO vouches (source_pubkey, target_pubkey, last_seen) VALUES (?, ?, ?);`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare vouch statement: %w", err)
+	}
+	defer vStmt.Close()
+
+	for _, target := range targets {
+		if _, err := pkStmt.Exec(target, now, now); err != nil {
+			return fmt.Errorf("failed to upsert target pubkey %s: %w", target, err)
+		}
+		if _, err := vStmt.Exec(source, target, now); err != nil {
+			return fmt.Errorf("failed to insert vouch %s -> %s: %w", source, target, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// UpsertReport records source→target as a report edge. Reports are additive
+// (kind:1984 events are not replaceable); re-reporting the same target just
+// refreshes the timestamp. The target is upserted into pubkeys so ranking can
+// cover brand-new accounts. No vouch is touched — the vouch-beats-report
+// precedence is resolved at ranking time (see GetTrustWeightedReports).
+func (r *Repository) UpsertReport(source, target string, createdAt time.Time) error {
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := createdAt.UTC()
 	if _, err := tx.Exec(
 		`INSERT INTO pubkeys (pubkey, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT(pubkey) DO NOTHING;`,
 		target, now, now,
@@ -40,17 +78,10 @@ func (r *Repository) setRelation(source, target, insertTable, deleteTable string
 	}
 
 	if _, err := tx.Exec(
-		fmt.Sprintf(`DELETE FROM %s WHERE source_pubkey = ? AND target_pubkey = ?;`, deleteTable),
-		source, target,
-	); err != nil {
-		return fmt.Errorf("failed to delete opposite relation: %w", err)
-	}
-
-	if _, err := tx.Exec(
-		fmt.Sprintf(`INSERT OR REPLACE INTO %s (source_pubkey, target_pubkey, created_at) VALUES (?, ?, ?);`, insertTable),
+		`INSERT OR REPLACE INTO reports (source_pubkey, target_pubkey, created_at) VALUES (?, ?, ?);`,
 		source, target, now,
 	); err != nil {
-		return fmt.Errorf("failed to insert relation: %w", err)
+		return fmt.Errorf("failed to insert report: %w", err)
 	}
 
 	return tx.Commit()
@@ -68,9 +99,17 @@ func (r *Repository) GetTrustScore(pubkey string) (float64, error) {
 	return score, nil
 }
 
-// StreamVouches streams all vouch edges. Shape mirrors StreamConnections.
-func (r *Repository) StreamVouches(callback func(models.Vouch) error) error {
-	rows, err := r.db.Query("SELECT source_pubkey, target_pubkey FROM vouches;")
+// StreamVouches streams vouch edges. When afterTime is non-nil, only edges
+// refreshed at or after it are returned — the same staleness window that ages
+// out follow edges, so a vouch dropped from a set eventually stops counting.
+func (r *Repository) StreamVouches(callback func(models.Vouch) error, afterTime *time.Time) error {
+	var rows *sql.Rows
+	var err error
+	if afterTime != nil {
+		rows, err = r.db.Query("SELECT source_pubkey, target_pubkey FROM vouches WHERE last_seen >= ?;", afterTime)
+	} else {
+		rows, err = r.db.Query("SELECT source_pubkey, target_pubkey FROM vouches;")
+	}
 	if err != nil {
 		return fmt.Errorf("failed to query vouches: %w", err)
 	}
@@ -110,13 +149,20 @@ func (r *Repository) GetPubkeysWithPositiveTrust() (map[string]struct{}, error) 
 
 // GetTrustWeightedReports aggregates reports per target, weighting each report
 // by the reporter's trust_score. Reporters with trust_score ≤ 0 are excluded —
-// the same admission rule that gates vouch edges.
+// the same admission rule that gates vouch edges. A report is also ignored when
+// the same source vouches for the same target: vouch beats report, resolved
+// here at ranking time rather than by mutual exclusion at write time.
 func (r *Repository) GetTrustWeightedReports() (map[string]models.ReportAggregate, error) {
 	query := `
 		SELECT r.target_pubkey, COUNT(*), COALESCE(SUM(p.trust_score), 0)
 		FROM reports r
 		JOIN pubkeys p ON p.pubkey = r.source_pubkey
 		WHERE p.trust_score > 0
+		  AND NOT EXISTS (
+		      SELECT 1 FROM vouches v
+		      WHERE v.source_pubkey = r.source_pubkey
+		        AND v.target_pubkey = r.target_pubkey
+		  )
 		GROUP BY r.target_pubkey;
 	`
 	rows, err := r.db.Query(query)

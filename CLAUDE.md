@@ -81,11 +81,16 @@ Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to
 - `crawler.num_profile_processors`: Number of profile event processors (default: 4)
 - `vouch.weight`: Enables the feature (0 = disabled, default) and sets the weight of a vouch edge relative to a follow edge (1.0). Typical enabled value: `0.5`.
 
-### Vouch & Report Endpoints (when `vouch.weight > 0`)
+### Vouch & Report via Nostr Events (when `vouch.weight > 0`)
 
-Two NIP-98 authenticated endpoints let users contribute to the graph without following:
+Vouches and reports are plain signed Nostr events, not a private API. They flow in two ways (both verify the event signature before storing):
 
-- `POST /vouch` with body `{"target": "<hex pubkey>"}` — registers source→target as a vouch edge in the ranking graph (equal weight to a follow, deduped against follows from the same source).
-- `POST /report` with body `{"target": "<hex pubkey>"}` — reports the target. Reports apply a trust-weighted penalty to the target's final score: `final = raw * (1 - R/(R+F))` where R is the sum of reporter trust_scores and F is the sum of follower/voucher trust_scores.
+1. **Crawler ingestion (pull)** — alongside kind:3/0, the crawler fetches each crawled author's kind:1984 reports and kind:10040 vouch set from their relays. Replaceable kinds (3/0/10040) share one small-limit query; kind:1984 (append-only, potentially many) gets its own query capped at the newest 50, kept separate so reports can't crowd out the replaceable events.
+2. **`POST /event` (push)** — accepts a single signed event (kind 3 / 1984 / 10040) for immediate ingestion. As an open write endpoint it keeps the anti-inflation rule: events from pubkeys with no TrustRank and not in `seed_pubkeys` return 200 but are silently dropped. (The crawler path does not filter this way — ranking already discounts untrusted sources.)
 
-No DELETE endpoints — the two actions are mutually exclusive per (source, target). Posting a report implicitly deletes any prior vouch for the same target, and vice versa. Submissions from pubkeys with no TrustRank and not in `seed_pubkeys` return 200 but are silently dropped (prevents spam inflation). Schema stored in `vouches` and `reports` tables (migration v4).
+Shared parsing/storage lives in `internal/ingest` so both paths behave identically.
+
+- **Vouch** = membership in the author's **kind:10040** vouch set (a custom replaceable event; not in any NIP). Its `p` tags list the vouched pubkeys. Registers source→target as a vouch edge (weight `vouch.weight`, deduped against a follow from the same source). Vouches follow the **same lifecycle as follow edges** (`vouches.last_seen`, not active deletion): each set refreshes its edges' `last_seen`; a pubkey dropped from the set is not deleted but stops being refreshed and ages out via the same staleness window as follows (`StreamVouches` filters on the ranking cutoff). So revoking a vouch takes effect after the window, exactly like unfollowing.
+- **Report** = a **kind:1984** (NIP-56) event targeting a **profile** (`p` tag, no `e` tag) with report type `spam` or `impersonation` (other types ignored). Applies a trust-weighted penalty to the target's final score: `final = raw * (1 - R/(R+F))` where R is the sum of reporter trust_scores and F is the sum of follower/voucher trust_scores.
+
+No mutual exclusion at write time — `vouches` and `reports` rows coexist. Precedence is resolved at ranking time: if a source both vouches for and reports the same target, the report is ignored (vouch beats report). Stored in the `vouches` and `reports` tables (schema from migration v4, unchanged).

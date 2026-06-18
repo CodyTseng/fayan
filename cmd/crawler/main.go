@@ -58,7 +58,7 @@ func main() {
 		NumContactProcessors: cfg.Crawler.NumContactProcessors,
 		NumProfileProcessors: cfg.Crawler.NumProfileProcessors,
 	}
-	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys, &cfg.Search, crawlerConfig)
+	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys, &cfg.Search, crawlerConfig, cfg.Vouch.Enabled())
 	c.Start()
 
 	// 6. Periodically Calculate Ranks

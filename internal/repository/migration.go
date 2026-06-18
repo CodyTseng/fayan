@@ -99,11 +99,14 @@ var migrations = []Migration{
 		Version: 4,
 		Name:    "add_vouches_and_reports",
 		Up: func(db *sql.DB) error {
+			// Vouches share the follow-edge lifecycle: refreshed on each
+			// kind:10040 set, never actively deleted, aged out by a staleness
+			// window — hence last_seen (cf. connections), not created_at.
 			vouchesTable := `
 			CREATE TABLE IF NOT EXISTS vouches (
 				source_pubkey TEXT NOT NULL,
 				target_pubkey TEXT NOT NULL,
-				created_at    TIMESTAMP NOT NULL,
+				last_seen     TIMESTAMP NOT NULL,
 				PRIMARY KEY (source_pubkey, target_pubkey)
 			);`
 
@@ -123,6 +126,9 @@ var migrations = []Migration{
 			}
 			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_vouches_target ON vouches(target_pubkey);"); err != nil {
 				return fmt.Errorf("failed to create idx_vouches_target: %w", err)
+			}
+			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_vouches_last_seen ON vouches(last_seen);"); err != nil {
+				return fmt.Errorf("failed to create idx_vouches_last_seen: %w", err)
 			}
 			if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_pubkey);"); err != nil {
 				return fmt.Errorf("failed to create idx_reports_target: %w", err)

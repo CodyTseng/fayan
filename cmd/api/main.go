@@ -87,13 +87,13 @@ func main() {
 	http.HandleFunc("/users/", middleware.CORS(h.User))
 	http.HandleFunc("/search", middleware.CORS(h.Search))
 
-	// Vouch / report endpoints (NIP-98 authenticated).
-	// When vouch.weight <= 0 the feature is disabled: no route is registered
-	// and requests fall through to the SPA catch-all handler below.
+	// Event ingestion endpoint. Accepts signed Nostr events (kind 3 / 1984 /
+	// 10040) as an immediate push complement to the crawler. When vouch.weight
+	// <= 0 the feature is disabled: no route is registered and requests fall
+	// through to the SPA catch-all handler below.
 	if cfg.Vouch.Enabled() {
-		http.HandleFunc("/vouch", middleware.CORS(middleware.NIP98Auth(h.Vouch)))
-		http.HandleFunc("/report", middleware.CORS(middleware.NIP98Auth(h.Report)))
-		log.Printf("[API] Vouch/report endpoints enabled (weight=%.2f)", cfg.Vouch.Weight)
+		http.HandleFunc("/event", middleware.CORS(h.PostEvent))
+		log.Printf("[API] Event ingestion endpoint enabled (weight=%.2f)", cfg.Vouch.Weight)
 	}
 
 	// Serve static assets (js, css, images, etc.) with long cache (1 year for hashed assets)

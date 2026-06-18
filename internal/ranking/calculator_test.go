@@ -63,7 +63,7 @@ func TestVouchPromotesUnfollowedUser(t *testing.T) {
 	}
 
 	// Seed vouches for a newbie nobody follows.
-	if err := repo.SetVouch("seed1", "newbie"); err != nil {
+	if err := repo.UpsertVouches("seed1", []string{"newbie"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestVouchWeightShrinksContribution(t *testing.T) {
 	if err := calcHigh.Calculate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetVouch("seed1", "newbie"); err != nil {
+	if err := repo.UpsertVouches("seed1", []string{"newbie"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,7 +131,7 @@ func TestVouchAndFollowDedupe(t *testing.T) {
 	repo := newTestRepo(t)
 
 	insertFollow(t, repo, "a", "b")
-	if err := repo.SetVouch("a", "b"); err != nil {
+	if err := repo.UpsertVouches("a", []string{"b"}); err != nil {
 		t.Fatal(err)
 	}
 	// Give A trust so vouch edge would be admitted.
@@ -186,7 +186,7 @@ func TestReportDecaysScore(t *testing.T) {
 
 	// All three seeds report X.
 	for _, s := range seeds {
-		if err := repo.SetReport(s, "x"); err != nil {
+		if err := repo.UpsertReport(s, "x", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -224,7 +224,7 @@ func TestReportWithNoTrustIgnored(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetReport("troll", "target"); err != nil {
+	if err := repo.UpsertReport("troll", "target", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 

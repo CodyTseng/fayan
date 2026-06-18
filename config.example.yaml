@@ -36,16 +36,16 @@ crawler:
   # Number of profile event processors (default: 4)
   num_profile_processors: 4
 
-# Vouch / report API endpoints (NIP-98 authenticated).
+# Vouch / report feature. Fed by standard signed Nostr events — the crawler
+# ingests them from relays, and the POST /event endpoint accepts pushes too.
 #
 # `weight` is the single control: set to 0 (default) to disable the feature
-# entirely — endpoints return 404 and vouches are ignored by ranking.
-# Set to a value in (0, 1] to enable. The value is the weight of a vouch
-# edge relative to a follow edge (1.0); e.g. 0.5 means each vouch
-# contributes half the flow of an actual follow. Reports are always active
-# when the feature is enabled and apply a trust-weighted penalty to the
-# target's final score. Submissions from pubkeys with no TrustRank (and
-# not in seed_pubkeys) are silently ignored.
+# entirely — the crawler skips kind:1984 / kind:10040, POST /event returns 404,
+# and vouches are ignored by ranking. Set to a value in (0, 1] to enable. The
+# value is the weight of a vouch edge relative to a follow edge (1.0); e.g. 0.5
+# means each vouch contributes half the flow of an actual follow. Reports apply
+# a trust-weighted penalty to the target's final score. POST /event submissions
+# from pubkeys with no TrustRank (and not in seed_pubkeys) are silently ignored.
 vouch:
   weight: 0
 

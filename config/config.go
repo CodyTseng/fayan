@@ -28,12 +28,13 @@ type CrawlerConfig struct {
 	NumProfileProcessors int `yaml:"num_profile_processors"` // Number of profile event processors (default: 4)
 }
 
-// VouchConfig controls the /vouch and /report API endpoints and the
-// weight of vouch edges in the ranking graph.
+// VouchConfig controls the vouch/report feature: whether the crawler ingests
+// kind:1984 reports and kind:10040 vouch sets, whether POST /event is served,
+// and the weight of vouch edges in the ranking graph.
 //
-// A single knob: weight == 0 disables the feature entirely (endpoints
-// return 404, vouches are not read by the ranking calculator);
-// weight > 0 enables the feature and sets the vouch-edge weight relative
+// A single knob: weight == 0 disables the feature entirely (crawler skips
+// those kinds, POST /event returns 404, vouches are not read by the ranking
+// calculator); weight > 0 enables it and sets the vouch-edge weight relative
 // to a follow edge (1.0). Typical values: 0.5. Must be in [0, 1].
 type VouchConfig struct {
 	Weight float64 `yaml:"weight"`
@@ -99,9 +100,9 @@ func Load(path string) (*Config, error) {
 	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
 		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
 	if cfg.Vouch.Enabled() {
-		log.Printf("[CONFIG] - Vouch endpoints enabled (weight=%.2f)", cfg.Vouch.Weight)
+		log.Printf("[CONFIG] - Vouch/report feature enabled (weight=%.2f)", cfg.Vouch.Weight)
 	} else {
-		log.Printf("[CONFIG] - Vouch endpoints disabled (weight=0)")
+		log.Printf("[CONFIG] - Vouch/report feature disabled (weight=0)")
 	}
 
 	return &cfg, nil

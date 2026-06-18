@@ -44,68 +44,61 @@ func countRows(t *testing.T, repo *Repository, table, source, target string) int
 	return n
 }
 
-func TestSetVouch_NewInsert(t *testing.T) {
+var (
+	t1 = time.Unix(1_700_000_000, 0).UTC()
+	t2 = time.Unix(1_700_000_100, 0).UTC()
+)
+
+func TestUpsertVouches_NewInsert(t *testing.T) {
 	repo := newTestRepo(t)
-	if err := repo.SetVouch("alice", "bob"); err != nil {
-		t.Fatalf("SetVouch failed: %v", err)
+	if err := repo.UpsertVouches("alice", []string{"bob"}); err != nil {
+		t.Fatalf("UpsertVouches failed: %v", err)
 	}
 	if countRows(t, repo, "vouches", "alice", "bob") != 1 {
 		t.Fatalf("expected one vouch row")
 	}
 }
 
-func TestSetVouch_Idempotent(t *testing.T) {
+// TestUpsertVouches_DoesNotDelete verifies vouches follow the follow-edge
+// lifecycle: a target dropped from a later set is NOT actively removed — it
+// lingers (to be aged out by the staleness window at ranking time).
+func TestUpsertVouches_DoesNotDelete(t *testing.T) {
 	repo := newTestRepo(t)
-	if err := repo.SetVouch("alice", "bob"); err != nil {
+	if err := repo.UpsertVouches("alice", []string{"bob", "charlie"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetVouch("alice", "bob"); err != nil {
+	// A later set without bob must not delete bob's edge.
+	if err := repo.UpsertVouches("alice", []string{"charlie", "dave"}); err != nil {
 		t.Fatal(err)
 	}
 	if countRows(t, repo, "vouches", "alice", "bob") != 1 {
-		t.Fatalf("expected exactly one vouch after duplicate SetVouch")
+		t.Fatalf("expected bob to linger (not actively deleted)")
+	}
+	if countRows(t, repo, "vouches", "alice", "charlie") != 1 {
+		t.Fatalf("expected charlie to remain")
+	}
+	if countRows(t, repo, "vouches", "alice", "dave") != 1 {
+		t.Fatalf("expected dave to be added")
 	}
 }
 
-func TestSetVouch_MutualExclusion_DeletesReport(t *testing.T) {
+func TestUpsertVouches_EmptyNoop(t *testing.T) {
 	repo := newTestRepo(t)
-	if err := repo.SetReport("alice", "bob"); err != nil {
+	if err := repo.UpsertVouches("alice", []string{"bob"}); err != nil {
 		t.Fatal(err)
 	}
-	if countRows(t, repo, "reports", "alice", "bob") != 1 {
-		t.Fatalf("expected report pre-existing")
-	}
-
-	if err := repo.SetVouch("alice", "bob"); err != nil {
+	// An empty set is a no-op: nothing is refreshed, nothing is deleted.
+	if err := repo.UpsertVouches("alice", nil); err != nil {
 		t.Fatal(err)
-	}
-	if countRows(t, repo, "reports", "alice", "bob") != 0 {
-		t.Fatalf("expected prior report to be deleted by SetVouch")
 	}
 	if countRows(t, repo, "vouches", "alice", "bob") != 1 {
-		t.Fatalf("expected vouch to exist")
+		t.Fatalf("expected bob to remain after empty set (no active delete)")
 	}
 }
 
-func TestSetReport_MutualExclusion_DeletesVouch(t *testing.T) {
+func TestUpsertVouches_UpsertsTargetPubkey(t *testing.T) {
 	repo := newTestRepo(t)
-	if err := repo.SetVouch("alice", "bob"); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.SetReport("alice", "bob"); err != nil {
-		t.Fatal(err)
-	}
-	if countRows(t, repo, "vouches", "alice", "bob") != 0 {
-		t.Fatalf("expected prior vouch to be deleted by SetReport")
-	}
-	if countRows(t, repo, "reports", "alice", "bob") != 1 {
-		t.Fatalf("expected report to exist")
-	}
-}
-
-func TestSetVouch_UpsertsTargetPubkey(t *testing.T) {
-	repo := newTestRepo(t)
-	if err := repo.SetVouch("alice", "brand-new-target"); err != nil {
+	if err := repo.UpsertVouches("alice", []string{"brand-new-target"}); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -114,6 +107,37 @@ func TestSetVouch_UpsertsTargetPubkey(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("expected target pubkey to be upserted into pubkeys table")
+	}
+}
+
+func TestUpsertReport_NewAndIdempotent(t *testing.T) {
+	repo := newTestRepo(t)
+	if err := repo.UpsertReport("alice", "bob", t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertReport("alice", "bob", t2); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, repo, "reports", "alice", "bob") != 1 {
+		t.Fatalf("expected exactly one report row after re-report")
+	}
+}
+
+func TestVouchAndReportCoexist(t *testing.T) {
+	repo := newTestRepo(t)
+	// No mutual exclusion at write time: both rows persist; precedence is
+	// resolved at ranking time (vouch beats report).
+	if err := repo.UpsertVouches("alice", []string{"bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertReport("alice", "bob", t1); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, repo, "vouches", "alice", "bob") != 1 {
+		t.Fatalf("expected vouch to persist alongside report")
+	}
+	if countRows(t, repo, "reports", "alice", "bob") != 1 {
+		t.Fatalf("expected report to persist alongside vouch")
 	}
 }
 
@@ -142,13 +166,10 @@ func TestGetTrustScore_KnownPubkey(t *testing.T) {
 
 func TestStreamVouches(t *testing.T) {
 	repo := newTestRepo(t)
-	if err := repo.SetVouch("alice", "bob"); err != nil {
+	if err := repo.UpsertVouches("alice", []string{"bob", "charlie"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetVouch("alice", "charlie"); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.SetVouch("dave", "bob"); err != nil {
+	if err := repo.UpsertVouches("dave", []string{"bob"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,11 +177,37 @@ func TestStreamVouches(t *testing.T) {
 	if err := repo.StreamVouches(func(v models.Vouch) error {
 		got = append(got, v)
 		return nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("expected 3 vouches, got %d", len(got))
+	}
+}
+
+// TestStreamVouches_StaleFiltered verifies the staleness window: edges last
+// seen before the cutoff are excluded, the same way stale follow edges are.
+func TestStreamVouches_StaleFiltered(t *testing.T) {
+	repo := newTestRepo(t)
+	if err := repo.UpsertVouches("alice", []string{"bob"}); err != nil {
+		t.Fatal(err)
+	}
+
+	count := func(after *time.Time) int {
+		n := 0
+		if err := repo.StreamVouches(func(models.Vouch) error { n++; return nil }, after); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	past := time.Now().UTC().Add(-time.Hour)
+	if count(&past) != 1 {
+		t.Fatalf("expected the fresh vouch to pass a past cutoff")
+	}
+	future := time.Now().UTC().Add(time.Hour)
+	if count(&future) != 0 {
+		t.Fatalf("expected the vouch to be filtered out by a future cutoff")
 	}
 }
 
@@ -191,13 +238,13 @@ func TestGetTrustWeightedReports(t *testing.T) {
 	seedPubkey(t, repo, "r2", 0.7)
 	seedPubkey(t, repo, "r3", 0) // untrusted; should be excluded
 
-	if err := repo.SetReport("r1", "target"); err != nil {
+	if err := repo.UpsertReport("r1", "target", t1); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetReport("r2", "target"); err != nil {
+	if err := repo.UpsertReport("r2", "target", t1); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetReport("r3", "target"); err != nil {
+	if err := repo.UpsertReport("r3", "target", t1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,6 +262,37 @@ func TestGetTrustWeightedReports(t *testing.T) {
 	expected := 0.3 + 0.7
 	if absDiff(agg.TotalReporterTrust, expected) > 1e-9 {
 		t.Fatalf("expected trust sum %v, got %v", expected, agg.TotalReporterTrust)
+	}
+}
+
+// TestGetTrustWeightedReports_VouchBeatsReport verifies a reporter who also
+// vouches for the same target is excluded from the report aggregate.
+func TestGetTrustWeightedReports_VouchBeatsReport(t *testing.T) {
+	repo := newTestRepo(t)
+	seedPubkey(t, repo, "r1", 0.3)
+	seedPubkey(t, repo, "r2", 0.7)
+
+	// Both report target; r1 also vouches for target → r1's report is ignored.
+	if err := repo.UpsertReport("r1", "target", t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertReport("r2", "target", t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertVouches("r1", []string{"target"}); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := repo.GetTrustWeightedReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := reports["target"]
+	if agg.NumReporters != 1 {
+		t.Fatalf("expected 1 effective reporter (r1's vouch beats its report), got %d", agg.NumReporters)
+	}
+	if absDiff(agg.TotalReporterTrust, 0.7) > 1e-9 {
+		t.Fatalf("expected trust sum 0.7 (only r2), got %v", agg.TotalReporterTrust)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"fayan/config"
 	"fayan/internal/cache"
+	"fayan/internal/ingest"
 	"fayan/internal/models"
 	"fayan/internal/repository"
 
@@ -23,6 +24,7 @@ type Handler struct {
 	cache        *cache.Cache
 	searchConfig *config.SearchConfig
 	seedSet      map[string]struct{}
+	ingester     *ingest.Ingester
 }
 
 // New creates a new Handler instance
@@ -36,6 +38,7 @@ func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.S
 		cache:        cache,
 		searchConfig: searchConfig,
 		seedSet:      seedSet,
+		ingester:     ingest.New(repo),
 	}
 }
 

@@ -126,7 +126,7 @@ func (c *Calculator) Calculate() error {
 			edges = append(edges, edge{source: sourceID, target: targetID, weight: c.vouchWeight})
 			vouchAdmitted++
 			return nil
-		}); err != nil {
+		}, &cutoffTime); err != nil {
 			return err
 		}
 		log.Printf("   [INFO] Vouch edges admitted: %d (weight=%.2f)", vouchAdmitted, c.vouchWeight)
