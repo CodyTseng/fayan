@@ -149,20 +149,15 @@ func (r *Repository) GetPubkeysWithPositiveTrust() (map[string]struct{}, error) 
 
 // GetTrustWeightedReports aggregates reports per target, weighting each report
 // by the reporter's trust_score. Reporters with trust_score ≤ 0 are excluded —
-// the same admission rule that gates vouch edges. A report is also ignored when
-// the same source vouches for the same target: vouch beats report, resolved
-// here at ranking time rather than by mutual exclusion at write time.
+// the same admission rule that gates vouch edges. A source that both vouches
+// for and reports the same target is not specially handled: the vouch adds
+// flow and the report subtracts it, which roughly cancels out on its own.
 func (r *Repository) GetTrustWeightedReports() (map[string]models.ReportAggregate, error) {
 	query := `
 		SELECT r.target_pubkey, COUNT(*), COALESCE(SUM(p.trust_score), 0)
 		FROM reports r
 		JOIN pubkeys p ON p.pubkey = r.source_pubkey
 		WHERE p.trust_score > 0
-		  AND NOT EXISTS (
-		      SELECT 1 FROM vouches v
-		      WHERE v.source_pubkey = r.source_pubkey
-		        AND v.target_pubkey = r.target_pubkey
-		  )
 		GROUP BY r.target_pubkey;
 	`
 	rows, err := r.db.Query(query)

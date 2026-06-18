@@ -125,8 +125,8 @@ func TestUpsertReport_NewAndIdempotent(t *testing.T) {
 
 func TestVouchAndReportCoexist(t *testing.T) {
 	repo := newTestRepo(t)
-	// No mutual exclusion at write time: both rows persist; precedence is
-	// resolved at ranking time (vouch beats report).
+	// No mutual exclusion at write time: both rows persist independently. The
+	// vouch adds flow and the report subtracts it at ranking time.
 	if err := repo.UpsertVouches("alice", []string{"bob"}); err != nil {
 		t.Fatal(err)
 	}
@@ -262,37 +262,6 @@ func TestGetTrustWeightedReports(t *testing.T) {
 	expected := 0.3 + 0.7
 	if absDiff(agg.TotalReporterTrust, expected) > 1e-9 {
 		t.Fatalf("expected trust sum %v, got %v", expected, agg.TotalReporterTrust)
-	}
-}
-
-// TestGetTrustWeightedReports_VouchBeatsReport verifies a reporter who also
-// vouches for the same target is excluded from the report aggregate.
-func TestGetTrustWeightedReports_VouchBeatsReport(t *testing.T) {
-	repo := newTestRepo(t)
-	seedPubkey(t, repo, "r1", 0.3)
-	seedPubkey(t, repo, "r2", 0.7)
-
-	// Both report target; r1 also vouches for target → r1's report is ignored.
-	if err := repo.UpsertReport("r1", "target", t1); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.UpsertReport("r2", "target", t1); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.UpsertVouches("r1", []string{"target"}); err != nil {
-		t.Fatal(err)
-	}
-
-	reports, err := repo.GetTrustWeightedReports()
-	if err != nil {
-		t.Fatal(err)
-	}
-	agg := reports["target"]
-	if agg.NumReporters != 1 {
-		t.Fatalf("expected 1 effective reporter (r1's vouch beats its report), got %d", agg.NumReporters)
-	}
-	if absDiff(agg.TotalReporterTrust, 0.7) > 1e-9 {
-		t.Fatalf("expected trust sum 0.7 (only r2), got %v", agg.TotalReporterTrust)
 	}
 }
 
