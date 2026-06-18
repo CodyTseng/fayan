@@ -85,7 +85,7 @@ Copy `config.example.yaml` to `config.yaml` (and `docker-compose.example.yml` to
 
 Vouches and reports are plain signed Nostr events, not a private API. They flow in two ways (both verify the event signature before storing):
 
-1. **Crawler ingestion (pull)** — alongside kind:3/0 (one shared query), the crawler fetches each crawled author's kind:1984 reports and kind:30000 vouch set in their own queries. The vouch set is fetched with a `#d` filter on the vouch identifier (so only it, not the user's other follow sets, comes back); kind:1984 (append-only, potentially many) is capped at the newest 50 and kept separate so reports can't crowd out the replaceable events.
+1. **Crawler ingestion (pull)** — one subscription per relay carries two filters (a REQ OR's multiple filters): filter 1 is kind:3 (+kind:0 when search is on); filter 2 is the kind:30000 vouch set constrained by `#d` (scoped to that filter, so it doesn't affect 3/0). kind:1984 reports are fetched in a separate subscription, capped at the newest 50, so an append-only flood can't crowd out the replaceable events.
 2. **`POST /event` (push)** — accepts a single signed event (kind 3 / 1984 / 30000) for immediate ingestion. As an open write endpoint it keeps the anti-inflation rule: events from pubkeys with no TrustRank and not in `seed_pubkeys` return 200 but are silently dropped. (The crawler path does not filter this way — ranking already discounts untrusted sources.)
 
 Shared parsing/storage lives in `internal/ingest` so both paths behave identically.
