@@ -40,7 +40,7 @@ crawler:
 # ingests them from relays, and the POST /event endpoint accepts pushes too.
 #
 # `weight` is the single control: set to 0 (default) to disable the feature
-# entirely — the crawler skips kind:1984 / kind:10040, POST /event returns 404,
+# entirely — the crawler skips kind:1984 / kind:30000, POST /event returns 404,
 # and vouches are ignored by ranking. Set to a value in (0, 1] to enable. The
 # value is the weight of a vouch edge relative to a follow edge (1.0); e.g. 0.5
 # means each vouch contributes half the flow of an actual follow. Reports apply

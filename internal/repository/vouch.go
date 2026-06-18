@@ -9,7 +9,7 @@ import (
 )
 
 // UpsertVouches refreshes the vouch edges from source for the pubkeys in the
-// latest kind:10040 set, mirroring how kind:3 contacts are stored: each edge is
+// latest kind:30000 set, mirroring how kind:3 contacts are stored: each edge is
 // upserted with last_seen = now and never actively deleted. A vouch dropped
 // from the set simply stops being refreshed and ages out of the ranking graph
 // via the same staleness window as follows (see StreamVouches). Targets are

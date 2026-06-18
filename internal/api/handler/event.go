@@ -11,7 +11,7 @@ import (
 // PostEvent handles POST /event. It accepts a single signed Nostr event, an
 // immediate push complement to the crawler's relay subscriptions. The same
 // event can (and should) also be published to public relays — Fayan is just one
-// of many aggregators. Supported kinds: 3 (contacts), 1984 (reports), 10040
+// of many aggregators. Supported kinds: 3 (contacts), 1984 (reports), 30000
 // (vouch sets); other kinds are rejected.
 //
 // As an open write endpoint it keeps the anti-inflation admission rule: the

@@ -46,6 +46,7 @@ func TestParseVouchTargets(t *testing.T) {
 		PubKey: author,
 		Kind:   KindVouchSet,
 		Tags: nostr.Tags{
+			{"d", VouchSetIdentifier},
 			{"p", bob},
 			{"p", bob}, // duplicate — collapsed
 			{"p", carol},
@@ -55,6 +56,32 @@ func TestParseVouchTargets(t *testing.T) {
 	targets := ParseVouchTargets(ev)
 	if len(targets) != 2 {
 		t.Fatalf("expected 2 deduped targets, got %d: %v", len(targets), targets)
+	}
+}
+
+func TestIsVouchSet(t *testing.T) {
+	author := mustPubkey(t)
+	cases := []struct {
+		name string
+		kind int
+		d    string
+		want bool
+	}{
+		{"vouch set", KindVouchSet, VouchSetIdentifier, true},
+		{"other follow set", KindVouchSet, "friends", false},
+		{"follow set without d", KindVouchSet, "", false},
+		{"wrong kind", KindContacts, VouchSetIdentifier, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := &nostr.Event{PubKey: author, Kind: tc.kind}
+			if tc.d != "" {
+				ev.Tags = nostr.Tags{{"d", tc.d}}
+			}
+			if got := IsVouchSet(ev); got != tc.want {
+				t.Fatalf("IsVouchSet = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

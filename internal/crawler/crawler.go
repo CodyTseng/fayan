@@ -68,7 +68,7 @@ type Crawler struct {
 }
 
 // NewCrawler creates a new Crawler instance. When vouchEnabled is true the
-// crawler also fetches kind:1984 reports and kind:10040 vouch sets.
+// crawler also fetches kind:1984 reports and kind:30000 vouch sets.
 func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig, crawlerConfig *CrawlerConfig, vouchEnabled bool) *Crawler {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -302,7 +302,7 @@ func (c *Crawler) contactProcessor() {
 }
 
 // dispatchRelationEvent routes a relation event from the contacts channel to
-// its handler by kind (kind:3 follows or kind:10040 vouch sets).
+// its handler by kind (kind:3 follows or kind:30000 vouch sets).
 func (c *Crawler) dispatchRelationEvent(event *nostr.Event) {
 	if event == nil {
 		return
@@ -377,10 +377,12 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 		wg.Add(1)
 		go func(r string, u []string) {
 			defer wg.Done()
-			contacts, profiles, vouchSets := c.fetchEventsFromRelay(r, u, fetchProfiles)
+			contacts, profiles := c.fetchEventsFromRelay(r, u, fetchProfiles)
 
+			var vouchSets map[string]*nostr.Event
 			var reports []*nostr.Event
 			if c.vouchEnabled {
+				vouchSets = c.fetchVouchSetsFromRelay(r, u)
 				reports = c.fetchReportsFromRelay(r, u)
 			}
 
@@ -448,45 +450,42 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 	}
 }
 
-// fetchEventsFromRelay fetches the replaceable events for multiple users from a
-// single relay: kind 3 (contacts), optionally kind 0 (profiles), and — when the
-// vouch feature is enabled — kind 10040 (vouch sets). All are one-per-author, so
-// they share a single small-limit query. kind:1984 reports are NOT fetched here;
-// being append-only and numerous, they get their own query (fetchReportsFromRelay).
-// Returns maps of pubkey -> latest event for contacts, profiles, and vouch sets.
-func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProfiles bool) (map[string]*nostr.Event, map[string]*nostr.Event, map[string]*nostr.Event) {
+// fetchEventsFromRelay fetches the shared replaceable events for multiple users
+// from a single relay: kind 3 (contacts) and optionally kind 0 (profiles). Both
+// are one-per-author and carry no `d` tag, so they share a single query. Vouch
+// sets (kind:30000, addressable by `d`) and reports (kind:1984, append-only)
+// each need different filters and are fetched separately.
+// Returns maps of pubkey -> latest event for contacts and profiles.
+func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProfiles bool) (map[string]*nostr.Event, map[string]*nostr.Event) {
 	if len(pubkeys) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	// Check if context is cancelled
 	select {
 	case <-c.ctx.Done():
-		return nil, nil, nil
+		return nil, nil
 	default:
 	}
 
 	// Skip if relay is banned
 	if c.relayHealth.IsRelayBanned(relay) {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	// Apply rate limiting for this specific relay
 	limiter := c.getRelayLimiter(relay)
 	if err := limiter.Wait(c.ctx); err != nil {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 	defer cancel()
 
-	// Build filter with kinds 3 (contacts), optionally 0 (profiles) and 10040 (vouch sets)
+	// Build filter with kinds 3 (contacts) and optionally 0 (profiles)
 	kinds := []int{3}
 	if fetchProfiles {
 		kinds = append(kinds, 0)
-	}
-	if c.vouchEnabled {
-		kinds = append(kinds, ingest.KindVouchSet)
 	}
 
 	filter := nostr.Filter{
@@ -506,7 +505,6 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 	// Collect events and keep only the latest for each pubkey
 	contacts := make(map[string]*nostr.Event)
 	profiles := make(map[string]*nostr.Event)
-	vouchSets := make(map[string]*nostr.Event)
 	timer := time.NewTimer(10 * time.Second) // Slightly less than context timeout
 	defer timer.Stop()
 	channelClosed := false
@@ -522,7 +520,7 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 					channelClosed = true
 					c.relayHealth.RecordSuccess(relay)
 				}
-				return contacts, profiles, vouchSets
+				return contacts, profiles
 			}
 
 			ev := relayEvent.Event
@@ -537,23 +535,78 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 				if existing, exists := profiles[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
 					profiles[ev.PubKey] = ev
 				}
-			case ingest.KindVouchSet:
-				if existing, exists := vouchSets[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
-					vouchSets[ev.PubKey] = ev
-				}
 			}
 		case <-timer.C:
 			// Timeout - this could indicate connection issues
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "timeout - no response")
 			}
-			return contacts, profiles, vouchSets
+			return contacts, profiles
 		case <-ctx.Done():
 			// Context cancelled
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "context cancelled")
 			}
-			return contacts, profiles, vouchSets
+			return contacts, profiles
+		}
+	}
+}
+
+// fetchVouchSetsFromRelay fetches the vouch set (NIP-51 kind:30000 tagged with
+// VouchSetIdentifier) for multiple users from a single relay. The #d filter
+// returns only the vouch set, not the users' other follow sets; being an
+// addressable event there is at most one per author. Returns pubkey -> latest.
+func (c *Crawler) fetchVouchSetsFromRelay(relay string, pubkeys []string) map[string]*nostr.Event {
+	if len(pubkeys) == 0 {
+		return nil
+	}
+
+	select {
+	case <-c.ctx.Done():
+		return nil
+	default:
+	}
+
+	if c.relayHealth.IsRelayBanned(relay) {
+		return nil
+	}
+
+	limiter := c.getRelayLimiter(relay)
+	if err := limiter.Wait(c.ctx); err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+	defer cancel()
+
+	filter := nostr.Filter{
+		Kinds:   []int{ingest.KindVouchSet},
+		Authors: pubkeys,
+		Tags:    nostr.TagMap{"d": []string{ingest.VouchSetIdentifier}},
+	}
+
+	pool := c.poolManager.GetPool()
+	eventsChan := pool.FetchMany(ctx, []string{relay}, filter)
+	c.poolManager.TrackRelayUsage(relay)
+
+	vouchSets := make(map[string]*nostr.Event)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case relayEvent, ok := <-eventsChan:
+			if !ok {
+				return vouchSets
+			}
+			ev := relayEvent.Event
+			if existing, exists := vouchSets[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
+				vouchSets[ev.PubKey] = ev
+			}
+		case <-timer.C:
+			return vouchSets
+		case <-ctx.Done():
+			return vouchSets
 		}
 	}
 }
@@ -743,7 +796,7 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 	c.crawledMu.Unlock()
 }
 
-// processVouchSetEvent verifies a kind:10040 event's signature and replaces the
+// processVouchSetEvent verifies a kind:30000 event's signature and replaces the
 // author's vouch edges with the listed pubkeys.
 func (c *Crawler) processVouchSetEvent(ev *nostr.Event) {
 	if ev.Kind != ingest.KindVouchSet {

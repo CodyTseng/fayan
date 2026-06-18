@@ -29,7 +29,7 @@ type CrawlerConfig struct {
 }
 
 // VouchConfig controls the vouch/report feature: whether the crawler ingests
-// kind:1984 reports and kind:10040 vouch sets, whether POST /event is served,
+// kind:1984 reports and kind:30000 vouch sets, whether POST /event is served,
 // and the weight of vouch edges in the ranking graph.
 //
 // A single knob: weight == 0 disables the feature entirely (crawler skips

@@ -100,7 +100,7 @@ var migrations = []Migration{
 		Name:    "add_vouches_and_reports",
 		Up: func(db *sql.DB) error {
 			// Vouches share the follow-edge lifecycle: refreshed on each
-			// kind:10040 set, never actively deleted, aged out by a staleness
+			// kind:30000 set, never actively deleted, aged out by a staleness
 			// window — hence last_seen (cf. connections), not created_at.
 			vouchesTable := `
 			CREATE TABLE IF NOT EXISTS vouches (

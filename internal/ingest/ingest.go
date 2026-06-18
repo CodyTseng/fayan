@@ -13,8 +13,14 @@ import (
 const (
 	KindContacts = 3     // NIP-02 contact list → follow edges
 	KindReport   = 1984  // NIP-56 report → report edge (profile-level only)
-	KindVouchSet = 10040 // Fayan vouch set: a replaceable list of vouched pubkeys
+	KindVouchSet = 30000 // NIP-51 follow set; the vouch set is the one tagged d=VouchSetIdentifier
 )
+
+// VouchSetIdentifier is the NIP-51 `d` tag value identifying the follow set
+// used as a vouch set. A kind:30000 with any other `d` is a regular follow set
+// and is ignored. The value is intentionally generic (no project prefix) so it
+// can serve as a shared convention if one emerges.
+const VouchSetIdentifier = "vouch"
 
 // acceptedReportTypes are the NIP-56 report types that affect reputation. Fayan
 // is a spam-detection system, so only these two carry weight; other types
@@ -44,9 +50,28 @@ func (in *Ingester) Apply(ev *nostr.Event) (handled bool, err error) {
 		_, err := in.ApplyReport(ev)
 		return true, err
 	case KindVouchSet:
+		if !IsVouchSet(ev) {
+			return false, nil // some other follow set — not ours
+		}
 		return true, in.ApplyVouchSet(ev)
 	}
 	return false, nil
+}
+
+// IsVouchSet reports whether ev is the NIP-51 follow set (kind:30000) Fayan
+// uses as a vouch set, i.e. tagged with VouchSetIdentifier.
+func IsVouchSet(ev *nostr.Event) bool {
+	return ev.Kind == KindVouchSet && dTagValue(ev.Tags) == VouchSetIdentifier
+}
+
+// dTagValue returns the value of the first `d` tag, or "" if absent.
+func dTagValue(tags nostr.Tags) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == "d" {
+			return tag[1]
+		}
+	}
+	return ""
 }
 
 // ApplyContacts parses a kind:3 event into follow connections and persists them.
@@ -128,10 +153,11 @@ func profileReportTarget(ev *nostr.Event) (string, bool) {
 	return target, target != ""
 }
 
-// ApplyVouchSet replaces the author's vouch edges with the pubkeys listed in a
-// kind:10040 event, honouring the replaceable semantics of the set.
+// ApplyVouchSet refreshes the author's vouch edges from the pubkeys listed in
+// their vouch set (the NIP-51 kind:30000 follow set tagged with
+// VouchSetIdentifier). A no-op for any other event.
 func (in *Ingester) ApplyVouchSet(ev *nostr.Event) error {
-	if ev.Kind != KindVouchSet {
+	if !IsVouchSet(ev) {
 		return nil
 	}
 	targets := ParseVouchTargets(ev)
@@ -139,7 +165,7 @@ func (in *Ingester) ApplyVouchSet(ev *nostr.Event) error {
 }
 
 // ParseVouchTargets extracts the valid, de-duplicated pubkeys an author vouches
-// for from a kind:10040 event's p tags (excluding the author themselves).
+// for from a follow set's p tags (excluding the author themselves).
 func ParseVouchTargets(ev *nostr.Event) []string {
 	seen := make(map[string]bool)
 	var targets []string
