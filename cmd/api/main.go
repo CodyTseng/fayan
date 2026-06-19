@@ -27,20 +27,20 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize repository in read-only mode
-	repo, err := repository.New(cfg.Database, repository.ModeReadOnly)
+	repo, err := repository.New(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer repo.Close()
 
-	log.Println("[API] Database initialized successfully (read-only mode)")
+	log.Println("[API] Database initialized successfully")
 
 	// Initialize cache
 	apiCache := cache.New(10*time.Minute, 10*time.Minute)
 
-	// Initialize handler with search config
-	h := handler.New(repo, apiCache, &cfg.Search)
+	// Initialize handler with search config and seed pubkeys (seeds always
+	// qualify for vouch/report submissions regardless of trust_score).
+	h := handler.New(repo, apiCache, &cfg.Search, cfg.SeedPubkeys)
 
 	// Setup static file system
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -86,6 +86,16 @@ func main() {
 	http.HandleFunc("/users", middleware.CORS(h.Users))
 	http.HandleFunc("/users/", middleware.CORS(h.User))
 	http.HandleFunc("/search", middleware.CORS(h.Search))
+
+	// Event ingestion endpoint. Accepts signed Nostr events (kind 3 / 1984 /
+	// 30000) as a push complement to the crawler; it queues the event and
+	// returns 202 immediately, processing it asynchronously. When vouch.weight
+	// <= 0 the feature is disabled: no route is registered and requests fall
+	// through to the SPA catch-all handler below.
+	if cfg.Vouch.Enabled() {
+		http.HandleFunc("/event", middleware.CORS(h.PostEvent))
+		log.Printf("[API] Event ingestion endpoint enabled (weight=%.2f)", cfg.Vouch.Weight)
+	}
 
 	// Serve static assets (js, css, images, etc.) with long cache (1 year for hashed assets)
 	http.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {

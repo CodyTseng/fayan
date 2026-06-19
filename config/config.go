@@ -28,6 +28,21 @@ type CrawlerConfig struct {
 	NumProfileProcessors int `yaml:"num_profile_processors"` // Number of profile event processors (default: 4)
 }
 
+// VouchConfig controls the vouch/report feature: whether the crawler ingests
+// kind:1984 reports and kind:30000 vouch sets, whether POST /event is served,
+// and the weight of vouch edges in the ranking graph.
+//
+// A single knob: weight == 0 disables the feature entirely (crawler skips
+// those kinds, POST /event returns 404, vouches are not read by the ranking
+// calculator); weight > 0 enables it and sets the vouch-edge weight relative
+// to a follow edge (1.0). Typical values: 0.5. Must be in [0, 1].
+type VouchConfig struct {
+	Weight float64 `yaml:"weight"`
+}
+
+// Enabled reports whether the vouch feature is active.
+func (v VouchConfig) Enabled() bool { return v.Weight > 0 }
+
 // Config represents the application configuration
 type Config struct {
 	Relays           []string      `yaml:"relays"`
@@ -38,6 +53,7 @@ type Config struct {
 	Search           SearchConfig  `yaml:"search"`
 	Ranking          RankingConfig `yaml:"ranking"`
 	Crawler          CrawlerConfig `yaml:"crawler"`
+	Vouch            VouchConfig   `yaml:"vouch"`
 }
 
 // Load reads and parses the configuration file
@@ -62,6 +78,9 @@ func Load(path string) (*Config, error) {
 			NumContactProcessors: 4,
 			NumProfileProcessors: 4,
 		},
+		Vouch: VouchConfig{
+			Weight: 0, // disabled by default
+		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
@@ -80,6 +99,11 @@ func Load(path string) (*Config, error) {
 	log.Printf("[CONFIG] - Ranking weights: TrustRank=%.2f, PageRank=%.2f", cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
 	log.Printf("[CONFIG] - Crawler: batch_size=%d, request_interval=%dms, contact_processors=%d, profile_processors=%d",
 		cfg.Crawler.BatchSize, cfg.Crawler.RequestIntervalMs, cfg.Crawler.NumContactProcessors, cfg.Crawler.NumProfileProcessors)
+	if cfg.Vouch.Enabled() {
+		log.Printf("[CONFIG] - Vouch/report feature enabled (weight=%.2f)", cfg.Vouch.Weight)
+	} else {
+		log.Printf("[CONFIG] - Vouch/report feature disabled (weight=0)")
+	}
 
 	return &cfg, nil
 }

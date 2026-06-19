@@ -10,6 +10,7 @@ import (
 
 	"fayan/config"
 	"fayan/internal/cache"
+	"fayan/internal/ingest"
 	"fayan/internal/models"
 	"fayan/internal/repository"
 
@@ -22,15 +23,30 @@ type Handler struct {
 	repo         *repository.Repository
 	cache        *cache.Cache
 	searchConfig *config.SearchConfig
+	seedSet      map[string]struct{}
+	ingester     *ingest.Ingester
+	ingestCh     chan *nostr.Event
 }
 
-// New creates a new Handler instance
-func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.SearchConfig) *Handler {
-	return &Handler{
+// New creates a new Handler instance and starts the background workers that
+// process events posted to /event asynchronously.
+func New(repo *repository.Repository, cache *cache.Cache, searchConfig *config.SearchConfig, seedPubkeys []string) *Handler {
+	seedSet := make(map[string]struct{}, len(seedPubkeys))
+	for _, pk := range seedPubkeys {
+		seedSet[pk] = struct{}{}
+	}
+	h := &Handler{
 		repo:         repo,
 		cache:        cache,
 		searchConfig: searchConfig,
+		seedSet:      seedSet,
+		ingester:     ingest.New(repo),
+		ingestCh:     make(chan *nostr.Event, ingestQueueSize),
 	}
+	for range ingestWorkers {
+		go h.ingestWorker()
+	}
+	return h
 }
 
 // HealthResponse represents the health check response

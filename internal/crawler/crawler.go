@@ -10,12 +10,20 @@ import (
 	"time"
 
 	"fayan/config"
+	"fayan/internal/ingest"
 	"fayan/internal/repository"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/sdk"
 	"golang.org/x/time/rate"
 )
+
+// maxReportsPerQuery caps how many kind:1984 reports a single relay query pulls
+// per author batch. Reports are append-only and a busy account can have many,
+// so without a cap they would crowd out the replaceable events sharing a fetch.
+// We deliberately do not paginate — successive crawl cycles re-fetch the batch,
+// and reports are sparse, so the newest 50 per query suffice.
+const maxReportsPerQuery = 50
 
 // CrawlerConfig holds the crawler configuration parameters
 type CrawlerConfig struct {
@@ -33,8 +41,11 @@ type Crawler struct {
 	seedPubkeys   []string
 	searchConfig  *config.SearchConfig
 	crawlerConfig *CrawlerConfig
+	vouchEnabled  bool
+	ingester      *ingest.Ingester
 	contactsChan  chan *nostr.Event
 	profilesChan  chan *nostr.Event
+	reportsChan   chan *nostr.Event
 	crawled       map[string]bool
 	crawledMu     sync.Mutex
 	relayLimiters map[string]*rate.Limiter
@@ -56,8 +67,9 @@ type Crawler struct {
 	cancel context.CancelFunc
 }
 
-// NewCrawler creates a new Crawler instance.
-func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig, crawlerConfig *CrawlerConfig) *Crawler {
+// NewCrawler creates a new Crawler instance. When vouchEnabled is true the
+// crawler also fetches kind:1984 reports and kind:30000 vouch sets.
+func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []string, searchConfig *config.SearchConfig, crawlerConfig *CrawlerConfig, vouchEnabled bool) *Crawler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	relayOptions := []nostr.RelayOption{
@@ -69,6 +81,7 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 	// Calculate channel buffer sizes based on batch size
 	contactsChanSize := crawlerConfig.BatchSize * 3
 	profilesChanSize := crawlerConfig.BatchSize * crawlerConfig.NumProfileProcessors * 2
+	reportsChanSize := crawlerConfig.BatchSize * 2
 
 	c := &Crawler{
 		repo:             repo,
@@ -77,8 +90,11 @@ func NewCrawler(repo *repository.Repository, relays []string, seedPubkeys []stri
 		seedPubkeys:      seedPubkeys,
 		searchConfig:     searchConfig,
 		crawlerConfig:    crawlerConfig,
+		vouchEnabled:     vouchEnabled,
+		ingester:         ingest.New(repo),
 		contactsChan:     make(chan *nostr.Event, contactsChanSize),
 		profilesChan:     make(chan *nostr.Event, profilesChanSize),
+		reportsChan:      make(chan *nostr.Event, reportsChanSize),
 		crawled:          make(map[string]bool),
 		relayLimiters:    make(map[string]*rate.Limiter),
 		relayHealth:      NewRelayHealthTracker(),
@@ -110,6 +126,7 @@ func (c *Crawler) Stop() {
 	// Now it's safe to close channels (no more senders)
 	close(c.contactsChan)
 	close(c.profilesChan)
+	close(c.reportsChan)
 
 	// Stop the pool manager (this will close all relay connections)
 	c.poolManager.Stop()
@@ -218,6 +235,17 @@ func (c *Crawler) Start() {
 		}
 	}
 
+	// Processors for kind:1984 report events (only when the feature is enabled)
+	if c.vouchEnabled {
+		for range c.crawlerConfig.NumContactProcessors {
+			c.wg.Add(1)
+			go func() {
+				defer c.wg.Done()
+				c.reportProcessor()
+			}()
+		}
+	}
+
 	// Status reporter (not tracked in wg since it's non-critical)
 	go c.statusReporter()
 }
@@ -264,14 +292,26 @@ func (c *Crawler) contactProcessor() {
 			if !ok {
 				return // Channel closed, exit
 			}
-			if event != nil {
-				c.processKind3Event(event)
-			}
+			c.dispatchRelationEvent(event)
 		case <-c.ctx.Done():
 			// Context cancelled, drain remaining events before exiting
 			c.drainContactsChan()
 			return
 		}
+	}
+}
+
+// dispatchRelationEvent routes a relation event from the contacts channel to
+// its handler by kind (kind:3 follows or kind:30000 vouch sets).
+func (c *Crawler) dispatchRelationEvent(event *nostr.Event) {
+	if event == nil {
+		return
+	}
+	switch event.Kind {
+	case ingest.KindContacts:
+		c.processKind3Event(event)
+	case ingest.KindVouchSet:
+		c.processVouchSetEvent(event)
 	}
 }
 
@@ -283,9 +323,7 @@ func (c *Crawler) drainContactsChan() {
 			if !ok {
 				return
 			}
-			if event != nil {
-				c.processKind3Event(event)
-			}
+			c.dispatchRelationEvent(event)
 		default:
 			return
 		}
@@ -324,10 +362,12 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 		}
 	}
 
-	// Step 3: Fetch contacts (and profiles if search is enabled) from each relay concurrently
+	// Step 3: Fetch contacts (and profiles/vouch sets) from each relay concurrently
 	// Collect results from all relays
 	contactEvents := make(map[string]*nostr.Event)
 	profileEvents := make(map[string]*nostr.Event)
+	vouchSetEvents := make(map[string]*nostr.Event)
+	var reportEvents []*nostr.Event
 	var wg sync.WaitGroup
 	var eventsMu sync.Mutex // Protect concurrent map writes
 
@@ -337,7 +377,12 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 		wg.Add(1)
 		go func(r string, u []string) {
 			defer wg.Done()
-			contacts, profiles := c.fetchEventsFromRelay(r, u, fetchProfiles)
+			contacts, profiles, vouchSets := c.fetchEventsFromRelay(r, u, fetchProfiles)
+
+			var reports []*nostr.Event
+			if c.vouchEnabled {
+				reports = c.fetchReportsFromRelay(r, u)
+			}
 
 			// Use mutex to protect map access
 			eventsMu.Lock()
@@ -351,6 +396,12 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 					profileEvents[pubkey] = event
 				}
 			}
+			for pubkey, event := range vouchSets {
+				if existing, exists := vouchSetEvents[pubkey]; !exists || event.CreatedAt > existing.CreatedAt {
+					vouchSetEvents[pubkey] = event
+				}
+			}
+			reportEvents = append(reportEvents, reports...)
 			eventsMu.Unlock()
 		}(relay, users)
 	}
@@ -358,8 +409,17 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 	// Wait for all relays to finish
 	wg.Wait()
 
-	// Step 5: Check against global timestamps and send to processors
+	// Step 5: Check against global timestamps and send to processors.
+	// Contacts and vouch sets share the contacts channel (dispatched by kind).
 	for _, event := range contactEvents {
+		select {
+		case c.contactsChan <- event:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+
+	for _, event := range vouchSetEvents {
 		select {
 		case c.contactsChan <- event:
 		case <-c.ctx.Done():
@@ -377,52 +437,75 @@ func (c *Crawler) fetchBatch(pubkeys []string) {
 			}
 		}
 	}
+
+	// Send report events to report processor
+	for _, event := range reportEvents {
+		select {
+		case c.reportsChan <- event:
+		case <-c.ctx.Done():
+			return
+		}
+	}
 }
 
-// fetchEventsFromRelay fetches contacts (kind 3) and optionally profiles (kind 0) for multiple users from a single relay
-// Returns maps of pubkey -> latest event for contacts and profiles
-func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProfiles bool) (map[string]*nostr.Event, map[string]*nostr.Event) {
+// fetchEventsFromRelay fetches the replaceable events for multiple users from a
+// single relay in ONE subscription. A REQ carries multiple filters (OR'd), so:
+//   - filter 1: kind 3 (contacts) + optional kind 0 (profiles) — one-per-author,
+//     no `d` tag;
+//   - filter 2 (when vouch is enabled): the vouch set (kind:30000) constrained
+//     by `#d` — that constraint applies only to its own filter, not to 3/0.
+//
+// One connection, one round-trip. kind:1984 reports are fetched separately
+// (fetchReportsFromRelay): being append-only they carry a per-query limit that
+// is cleaner to reason about in its own subscription.
+// Returns maps of pubkey -> latest event for contacts, profiles and vouch sets.
+func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProfiles bool) (map[string]*nostr.Event, map[string]*nostr.Event, map[string]*nostr.Event) {
 	if len(pubkeys) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Check if context is cancelled
 	select {
 	case <-c.ctx.Done():
-		return nil, nil
+		return nil, nil, nil
 	default:
 	}
 
 	// Skip if relay is banned
 	if c.relayHealth.IsRelayBanned(relay) {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Apply rate limiting for this specific relay
 	limiter := c.getRelayLimiter(relay)
 	if err := limiter.Wait(c.ctx); err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 	defer cancel()
 
-	// Build filter with kinds 3 (contacts) and optionally 0 (profiles)
+	// Filter 1: contacts (+ profiles).
 	kinds := []int{3}
 	if fetchProfiles {
 		kinds = append(kinds, 0)
 	}
+	filters := nostr.Filters{{Kinds: kinds, Authors: pubkeys}}
 
-	filter := nostr.Filter{
-		Kinds:   kinds,
-		Authors: pubkeys,
+	// Filter 2: the vouch set; its #d constraint is scoped to this filter only.
+	if c.vouchEnabled {
+		filters = append(filters, nostr.Filter{
+			Kinds:   []int{ingest.KindVouchSet},
+			Authors: pubkeys,
+			Tags:    nostr.TagMap{"d": []string{ingest.VouchSetIdentifier}},
+		})
 	}
 
 	// Get the current pool from pool manager
 	pool := c.poolManager.GetPool()
 
-	// SubscribeMany returns a channel of RelayEvent
-	eventsChan := pool.FetchMany(ctx, []string{relay}, filter)
+	// SubManyEose is like FetchMany but takes multiple filters; ends on EOSE.
+	eventsChan := pool.SubManyEose(ctx, []string{relay}, filters)
 
 	// Track relay usage
 	c.poolManager.TrackRelayUsage(relay)
@@ -430,6 +513,7 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 	// Collect events and keep only the latest for each pubkey
 	contacts := make(map[string]*nostr.Event)
 	profiles := make(map[string]*nostr.Event)
+	vouchSets := make(map[string]*nostr.Event)
 	timer := time.NewTimer(10 * time.Second) // Slightly less than context timeout
 	defer timer.Stop()
 	channelClosed := false
@@ -445,7 +529,7 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 					channelClosed = true
 					c.relayHealth.RecordSuccess(relay)
 				}
-				return contacts, profiles
+				return contacts, profiles, vouchSets
 			}
 
 			ev := relayEvent.Event
@@ -460,19 +544,80 @@ func (c *Crawler) fetchEventsFromRelay(relay string, pubkeys []string, fetchProf
 				if existing, exists := profiles[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
 					profiles[ev.PubKey] = ev
 				}
+			case ingest.KindVouchSet:
+				if existing, exists := vouchSets[ev.PubKey]; !exists || ev.CreatedAt > existing.CreatedAt {
+					vouchSets[ev.PubKey] = ev
+				}
 			}
 		case <-timer.C:
 			// Timeout - this could indicate connection issues
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "timeout - no response")
 			}
-			return contacts, profiles
+			return contacts, profiles, vouchSets
 		case <-ctx.Done():
 			// Context cancelled
 			if !channelClosed {
 				c.relayHealth.RecordFailure(relay, "context cancelled")
 			}
-			return contacts, profiles
+			return contacts, profiles, vouchSets
+		}
+	}
+}
+
+// fetchReportsFromRelay fetches kind:1984 reports for multiple users from a
+// single relay in their own capped query, kept separate from the replaceable
+// events so a flood of reports cannot crowd them out. Returns all matching
+// events (an author may have many); de-duplication happens at ingest time.
+func (c *Crawler) fetchReportsFromRelay(relay string, pubkeys []string) []*nostr.Event {
+	if len(pubkeys) == 0 {
+		return nil
+	}
+
+	select {
+	case <-c.ctx.Done():
+		return nil
+	default:
+	}
+
+	if c.relayHealth.IsRelayBanned(relay) {
+		return nil
+	}
+
+	limiter := c.getRelayLimiter(relay)
+	if err := limiter.Wait(c.ctx); err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+	defer cancel()
+
+	limit := maxReportsPerQuery
+	filter := nostr.Filter{
+		Kinds:   []int{ingest.KindReport},
+		Authors: pubkeys,
+		Limit:   limit,
+	}
+
+	pool := c.poolManager.GetPool()
+	eventsChan := pool.FetchMany(ctx, []string{relay}, filter)
+	c.poolManager.TrackRelayUsage(relay)
+
+	var reports []*nostr.Event
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case relayEvent, ok := <-eventsChan:
+			if !ok {
+				return reports
+			}
+			reports = append(reports, relayEvent.Event)
+		case <-timer.C:
+			return reports
+		case <-ctx.Done():
+			return reports
 		}
 	}
 }
@@ -584,39 +729,13 @@ func (c *Crawler) isValidRelay(url string) bool {
 // processKind3Event parses a kind:3 event and updates the database and work queue.
 // Uses batch writes to reduce lock contention.
 func (c *Crawler) processKind3Event(ev *nostr.Event) {
-	if ev.Kind != 3 {
+	if ev.Kind != ingest.KindContacts {
 		return
 	}
 
-	// Collect all pubkeys and connections for batch write
-	pubkeySet := make(map[string]bool)
-	pubkeySet[ev.PubKey] = true
-
-	var connections []repository.Connection
-
-	for _, tag := range ev.Tags {
-		if len(tag) >= 2 && tag[0] == "p" {
-			targetPubkey := tag[1]
-			if !nostr.IsValidPublicKey(targetPubkey) {
-				continue
-			}
-			if targetPubkey == ev.PubKey {
-				continue
-			}
-
-			pubkeySet[targetPubkey] = true
-			connections = append(connections, repository.Connection{
-				Source: ev.PubKey,
-				Target: targetPubkey,
-			})
-		}
-	}
-
-	// Convert set to slice
-	pubkeys := make([]string, 0, len(pubkeySet))
-	for pk := range pubkeySet {
-		pubkeys = append(pubkeys, pk)
-	}
+	// Parse with the shared ingest parser so the crawler and POST /event paths
+	// produce identical follow edges.
+	pubkeys, connections := ingest.ParseContacts(ev)
 
 	// Batch write all pubkeys and connections in a single transaction
 	if err := c.repo.BatchUpsertPubkeysAndConnections(pubkeys, connections); err != nil {
@@ -625,10 +744,78 @@ func (c *Crawler) processKind3Event(ev *nostr.Event) {
 
 	// Update crawled map
 	c.crawledMu.Lock()
-	for pk := range pubkeySet {
+	for _, pk := range pubkeys {
 		c.crawled[pk] = true
 	}
 	c.crawledMu.Unlock()
+}
+
+// processVouchSetEvent verifies a kind:30000 event's signature and replaces the
+// author's vouch edges with the listed pubkeys.
+func (c *Crawler) processVouchSetEvent(ev *nostr.Event) {
+	if ev.Kind != ingest.KindVouchSet {
+		return
+	}
+	if ok, err := ev.CheckSignature(); err != nil || !ok {
+		return
+	}
+	if err := c.ingester.ApplyVouchSet(ev); err != nil {
+		log.Printf("[CRAWLER] Error applying vouch set for %s: %v", ev.PubKey, err)
+	}
+}
+
+// processReportEvent verifies a kind:1984 event's signature and stores it as a
+// report edge when it is a profile-level spam/impersonation report.
+func (c *Crawler) processReportEvent(ev *nostr.Event) {
+	if ev.Kind != ingest.KindReport {
+		return
+	}
+	if ok, err := ev.CheckSignature(); err != nil || !ok {
+		return
+	}
+	if _, err := c.ingester.ApplyReport(ev); err != nil {
+		log.Printf("[CRAWLER] Error applying report from %s: %v", ev.PubKey, err)
+	}
+}
+
+// reportProcessor handles processing of report events (kind 1984)
+func (c *Crawler) reportProcessor() {
+	for {
+		if c.waitIfPaused() {
+			c.drainReportsChan()
+			return
+		}
+
+		select {
+		case event, ok := <-c.reportsChan:
+			if !ok {
+				return
+			}
+			if event != nil {
+				c.processReportEvent(event)
+			}
+		case <-c.ctx.Done():
+			c.drainReportsChan()
+			return
+		}
+	}
+}
+
+// drainReportsChan processes any remaining events in the reports channel
+func (c *Crawler) drainReportsChan() {
+	for {
+		select {
+		case event, ok := <-c.reportsChan:
+			if !ok {
+				return
+			}
+			if event != nil {
+				c.processReportEvent(event)
+			}
+		default:
+			return
+		}
+	}
 }
 
 // profileProcessor handles processing of profile events (kind 0)

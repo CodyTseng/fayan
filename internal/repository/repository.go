@@ -11,16 +11,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// DBMode specifies the database access mode
-type DBMode int
-
-const (
-	// ModeReadWrite is for crawler - optimized for writes
-	ModeReadWrite DBMode = iota
-	// ModeReadOnly is for API - optimized for reads
-	ModeReadOnly
-)
-
 // totalUsersCache caches the count of users
 type totalUsersCache struct {
 	count  int
@@ -36,11 +26,14 @@ type Repository struct {
 	writeMu         sync.Mutex // Serializes all write operations for SQLite
 }
 
-// New creates a new Repository instance
-func New(dataSourceName string, mode DBMode) (*Repository, error) {
-	// Build DSN with parameters that apply to ALL connections in the pool
-	// This is critical - PRAGMA statements only affect a single connection,
-	// but DSN parameters are applied when each connection is created
+// New creates a new Repository instance.
+// WAL mode allows concurrent readers alongside a single writer; writeMu
+// serializes writers within this process, SQLite's own locks coordinate
+// across processes.
+func New(dataSourceName string) (*Repository, error) {
+	// Build DSN with parameters that apply to ALL connections in the pool.
+	// DSN parameters are applied when each connection is created, while
+	// PRAGMA statements would only affect whichever connection ran them.
 	dsnParams := []string{
 		"_journal_mode=WAL",
 		"_synchronous=NORMAL",
@@ -48,11 +41,7 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 		"_cache_size=-64000",
 		"_txlock=immediate", // Acquire write lock at BEGIN, not at first write
 	}
-	if mode == ModeReadOnly {
-		dsnParams = append(dsnParams, "_query_only=true")
-	}
 
-	// Append parameters to DSN
 	separator := "?"
 	if strings.Contains(dataSourceName, "?") {
 		separator = "&"
@@ -68,20 +57,13 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 		return nil, fmt.Errorf("could not connect to database: %w", err)
 	}
 
-	// Configure connection pool based on mode
-	if mode == ModeReadOnly {
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(5)
-	} else {
-		// For write mode: use single connection to avoid lock contention
-		// SQLite only allows one writer at a time anyway
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-	}
+	// Connection pool: multiple connections so reads can run concurrently
+	// under WAL. Writes serialize on writeMu, so extra connections do not
+	// cause write contention.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)
 
-	// These PRAGMAs don't have DSN equivalents, set on initial connection
-	// With MaxOpenConns=1 for write mode, this is sufficient
 	additionalPragmas := []string{
 		"PRAGMA temp_store = MEMORY;",
 		"PRAGMA mmap_size = 1073741824;",
@@ -102,11 +84,8 @@ func New(dataSourceName string, mode DBMode) (*Repository, error) {
 		},
 	}
 
-	// Run migrations in read-write mode
-	if mode == ModeReadWrite {
-		if err := repo.RunMigrations(); err != nil {
-			return nil, fmt.Errorf("could not run migrations: %w", err)
-		}
+	if err := repo.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("could not run migrations: %w", err)
 	}
 
 	return repo, nil

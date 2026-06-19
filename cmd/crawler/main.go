@@ -31,9 +31,9 @@ func main() {
 		log.Fatalf("[CONFIG] Failed to load configuration: %v", err)
 	}
 
-	// 2. Initialize Repository in read-write mode
+	// 2. Initialize Repository
 	log.Println("[DATABASE] Initializing...")
-	repo, err := repository.New(cfg.Database, repository.ModeReadWrite)
+	repo, err := repository.New(cfg.Database)
 	if err != nil {
 		log.Fatalf("[DATABASE] Failed to initialize: %v", err)
 	}
@@ -41,7 +41,7 @@ func main() {
 	log.Println("[DATABASE] Ready (read-write mode)")
 
 	// 3. Create ranking calculator
-	calculator := ranking.NewCalculator(repo, cfg.SeedPubkeys, cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight)
+	calculator := ranking.NewCalculator(repo, cfg.SeedPubkeys, cfg.Ranking.TrustRankWeight, cfg.Ranking.PageRankWeight, cfg.Vouch.Weight)
 
 	// 4. Perform an initial rank calculation
 	log.Println("[RANK] Performing initial calculation...")
@@ -58,7 +58,7 @@ func main() {
 		NumContactProcessors: cfg.Crawler.NumContactProcessors,
 		NumProfileProcessors: cfg.Crawler.NumProfileProcessors,
 	}
-	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys, &cfg.Search, crawlerConfig)
+	c := crawler.NewCrawler(repo, cfg.Relays, cfg.SeedPubkeys, &cfg.Search, crawlerConfig, cfg.Vouch.Enabled())
 	c.Start()
 
 	// 6. Periodically Calculate Ranks
