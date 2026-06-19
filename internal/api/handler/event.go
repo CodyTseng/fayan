@@ -2,59 +2,69 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 
 	"github.com/nbd-wtf/go-nostr"
 )
 
-// PostEvent handles POST /event. It accepts a single signed Nostr event, an
-// immediate push complement to the crawler's relay subscriptions. The same
-// event can (and should) also be published to public relays — Fayan is just one
-// of many aggregators. Supported kinds: 3 (contacts), 1984 (reports), 30000
-// (vouch sets); other kinds are rejected.
-//
-// As an open write endpoint it keeps the anti-inflation admission rule: the
-// author must be a seed or have earned TrustRank > 0, otherwise the event is
-// silently dropped with 200 so the client cannot probe admission. (The crawler
-// path does not filter this way — it aggregates public events as-is, and the
-// ranking stage already discounts untrusted sources.)
+// Async ingest tuning for POST /event.
+const (
+	maxEventBytes   = 1 << 20 // 1 MiB cap on a request body; Nostr events are small
+	ingestQueueSize = 1024    // buffered events awaiting background processing
+	ingestWorkers   = 4       // background workers draining the queue
+)
+
+// PostEvent handles POST /event as a fire-and-forget intake: it reads the body,
+// queues the event, and returns 202 immediately and unconditionally. Signature
+// verification, the anti-inflation admission check, and persistence all happen
+// on a background worker (processEvent) — the client learns nothing about the
+// outcome. This is just a push accelerator: the same event is published to
+// public relays, and the crawler ingests it from there regardless, so a full
+// queue can simply drop the event.
 func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
+	// Decode synchronously — the body is gone once we return — then hand off.
 	var ev nostr.Event
-	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid event JSON")
-		return
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxEventBytes)).Decode(&ev); err == nil {
+		select {
+		case h.ingestCh <- &ev:
+		default:
+			// Queue full: drop. The crawler will pick the event up from relays.
+			log.Printf("[API] Ingest queue full, dropped event kind=%d", ev.Kind)
+		}
 	}
 
-	ok, err := ev.CheckSignature()
-	if err != nil || !ok {
-		writeError(w, http.StatusUnauthorized, "Invalid event signature")
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// ingestWorker drains the async ingest queue, processing one event at a time.
+func (h *Handler) ingestWorker() {
+	for ev := range h.ingestCh {
+		h.processEvent(ev)
+	}
+}
+
+// processEvent verifies, admits, and persists a single queued event off the
+// request path. Every failure is silently dropped (logged at most) — there is
+// no caller to report back to.
+func (h *Handler) processEvent(ev *nostr.Event) {
+	if ok, err := ev.CheckSignature(); err != nil || !ok {
 		return
 	}
-
-	// Silent-ignore admission rule (see doc comment).
+	// Anti-inflation admission: only seeds or pubkeys with positive TrustRank
+	// contribute, so an untrusted author cannot inflate the graph by pushing.
 	if !h.authorQualifies(ev.PubKey) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
-
-	handled, err := h.ingester.Apply(&ev)
-	if err != nil {
+	if _, err := h.ingester.Apply(ev); err != nil {
 		log.Printf("[API] Error ingesting event (kind=%d pubkey=%s): %v", ev.Kind, ev.PubKey, err)
-		writeError(w, http.StatusInternalServerError, "Failed to ingest event")
-		return
 	}
-	if !handled {
-		writeError(w, http.StatusBadRequest, "Unsupported event kind")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // authorQualifies returns true if the author is an explicit seed or has a

@@ -88,7 +88,8 @@ func main() {
 	http.HandleFunc("/search", middleware.CORS(h.Search))
 
 	// Event ingestion endpoint. Accepts signed Nostr events (kind 3 / 1984 /
-	// 30000) as an immediate push complement to the crawler. When vouch.weight
+	// 30000) as a push complement to the crawler; it queues the event and
+	// returns 202 immediately, processing it asynchronously. When vouch.weight
 	// <= 0 the feature is disabled: no route is registered and requests fall
 	// through to the SPA catch-all handler below.
 	if cfg.Vouch.Enabled() {
